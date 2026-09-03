@@ -33,6 +33,7 @@ from app_pages.mode3_intraday import render_mode3
 from app_pages.mode4_forecast import render_mode4
 from app_pages.mode5_wealth import render_mode5
 from app_pages.mode6_academy import render_mode6
+from app_pages.mode7_walkthrough import render_mode7
 from utils.user_prefs import get_user_preferences, save_user_preference
 
 inject_css()
@@ -86,6 +87,7 @@ mode_options = [
     "🔬  Forecast & Correlation Lab",
     "🔍  Manual Ticker Analysis",
     "🎓  AI Academy & Paper Trading",
+    "📖  App Walkthrough & User Guide",
 ]
 
 target_mode = st.session_state.get("target_operating_mode")
@@ -193,4 +195,6 @@ elif mode.startswith("🔍"):
     render_mode1()
 elif mode.startswith("🎓"):
     render_mode6()
+elif mode.startswith("📖"):
+    render_mode7()
 
