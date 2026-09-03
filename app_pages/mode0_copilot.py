@@ -303,47 +303,35 @@ def render_mode0():
                     anti_sweep_badge = f'<span style="background:#A371F722;color:#A371F7;border:1px solid #A371F744;padding:2px 8px;border-radius:12px;font-size:10px;font-weight:700;">🛡️ Anti-Sweep Stop ({s["adaptive_stop_mult"]}x ATR)</span>'
 
                 with st.container():
-                    st.markdown(
-                        textwrap.dedent(f"""
-                        <div class="top10-card" style="border-left: 4px solid #58A6FF;margin-bottom:18px;">
-                            <div class="top10-header">
-                                <div>
-                                    <span class="top10-rank-pill">🎯 SETUP #{s_idx}</span>
-                                    <span class="top10-symbol">&nbsp;{esc(tick)}</span>
-                                    <div class="top10-sector">Reference Price: <strong>₹{s['price']:,.2f}</strong></div>
-                                </div>
-                                <div style="text-align:right;">
-                                </div>
-                            </div>
-                            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px;">
-                                <span class="tactical-badge tactical-badge-action">⚡ {esc(s['action'])}</span>
-                                <span class="tactical-badge tactical-badge-up">{esc(s['bias'])}</span>
-                                <span style="background:{s['meta_eval']['badge_color']}22;color:{s['meta_eval']['badge_color']};border:1px solid {s['meta_eval']['badge_color']}44;padding:2px 8px;border-radius:12px;font-size:11px;font-weight:700;">{s['meta_eval']['status_badge']}</span>
-                                {anti_sweep_badge}
-                                <span style="font-size:11px;color:var(--amber);font-family:var(--mono);">Expected Inflection @ {esc(s['flip_time'])}</span>
-                            </div>
-                            <div class="top10-grid-levels">
-                                <div class="level-item">
-                                    <span class="level-label">1. Place Buy Limit</span>
-                                    <span class="level-val val-buy">₹{s['entry']:,.2f}</span>
-                                </div>
-                                <div class="level-item">
-                                    <span class="level-label">2. Take Profit (Scalp)</span>
-                                    <span class="level-val val-target">₹{s['target1']:,.2f}</span>
-                                </div>
-                                <div class="level-item">
-                                    <span class="level-label">3. Stop Loss</span>
-                                    <span class="level-val val-stop">₹{s['stop_loss']:,.2f}</span>
-                                </div>
-                            </div>
-                            <div class="top10-sizing-strip">
-                                <span>EXACT SIZED ORDER</span>
-                                <span>Buy <strong>{s['shares']:,} shares</strong> (₹{s['pos_val']:,.0f} value) · Max Loss strictly capped at ₹{s['risk_val']:,.0f} ({s['meta_eval']['bet_sizing_factor']}x sizing)</span>
-                            </div>
-                        </div>
-                        """),
-                        unsafe_allow_html=True,
-                    )
+                    card_html_t1 = "\n".join([
+                        f'<div class="top10-card" style="border-left: 4px solid #58A6FF;margin-bottom:18px;">',
+                        f'<div class="top10-header">',
+                        f'<div>',
+                        f'<span class="top10-rank-pill">🎯 SETUP #{s_idx}</span>',
+                        f'<span class="top10-symbol">&nbsp;{esc(tick)}</span>',
+                        f'<div class="top10-sector">Reference Price: <strong>₹{s["price"]:,.2f}</strong></div>',
+                        f'</div>',
+                        f'<div style="text-align:right;"></div>',
+                        f'</div>',
+                        f'<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px;">',
+                        f'<span class="tactical-badge tactical-badge-action">⚡ {esc(s["action"])}</span>',
+                        f'<span class="tactical-badge tactical-badge-up">{esc(s["bias"])}</span>',
+                        f'<span style="background:{s["meta_eval"]["badge_color"]}22;color:{s["meta_eval"]["badge_color"]};border:1px solid {s["meta_eval"]["badge_color"]}44;padding:2px 8px;border-radius:12px;font-size:11px;font-weight:700;">{s["meta_eval"]["status_badge"]}</span>',
+                        anti_sweep_badge,
+                        f'<span style="font-size:11px;color:var(--amber);font-family:var(--mono);">Expected Inflection @ {esc(s["flip_time"])}</span>',
+                        f'</div>',
+                        f'<div class="top10-grid-levels">',
+                        f'<div class="level-item"><span class="level-label">1. Place Buy Limit</span><span class="level-val val-buy">₹{s["entry"]:,.2f}</span></div>',
+                        f'<div class="level-item"><span class="level-label">2. Take Profit (Scalp)</span><span class="level-val val-target">₹{s["target1"]:,.2f}</span></div>',
+                        f'<div class="level-item"><span class="level-label">3. Stop Loss</span><span class="level-val val-stop">₹{s["stop_loss"]:,.2f}</span></div>',
+                        f'</div>',
+                        f'<div class="top10-sizing-strip">',
+                        f'<span>EXACT SIZED ORDER</span>',
+                        f'<span>Buy <strong>{s["shares"]:,} shares</strong> (₹{s["pos_val"]:,.0f} value) · Max Loss strictly capped at ₹{s["risk_val"]:,.0f} ({s["meta_eval"]["bet_sizing_factor"]}x sizing)</span>',
+                        f'</div>',
+                        f'</div>'
+                    ])
+                    st.markdown(card_html_t1, unsafe_allow_html=True)
 
                     # Interactive actions & ELI5
                     col_act1, col_act2, col_act3 = st.columns([2, 2, 3])
@@ -424,56 +412,35 @@ def render_mode0():
                 sip_invested = monthly_sip * 60
 
                 with st.container():
-                    st.markdown(
-                        textwrap.dedent(f"""
-                        <div class="top10-card" style="border-top: 4px solid #3FB950;margin-bottom:18px;">
-                            <div class="top10-header">
-                                <div>
-                                    <span class="moat-pill moat-wide">🏰 {esc(moat)}</span>
-                                    <span class="top10-symbol">&nbsp;{esc(tick)}</span>
-                                    <div class="top10-sector">{esc(name)} · LTP: <strong>₹{p:,.2f}</strong></div>
-                                </div>
-                                <div style="text-align:right;">
-                                    <div style="font-family:var(--mono);font-size:18px;font-weight:700;color:#3FB950;">
-                                        ~{cagr:.1f}% Projected CAGR
-                                    </div>
-                                    <div style="font-size:11px;color:var(--text-muted);font-family:var(--mono);">
-                                        Quality: {score:.0f}/100 · {esc(tier.split(' ')[1])}
-                                    </div>
-                                </div>
-                            </div>
-                            <div class="top10-grid-levels" style="grid-template-columns: repeat(3, 1fr);">
-                                <div class="level-item">
-                                    <span class="level-label">P/E Valuation</span>
-                                    <span class="level-val">{c_stock['trailing_pe']}</span>
-                                </div>
-                                <div class="level-item">
-                                    <span class="level-label">Return on Equity (ROE)</span>
-                                    <span class="level-val" style="color:#3FB950;">{c_stock['roe_pct']}%</span>
-                                </div>
-                                <div class="level-item">
-                                    <span class="level-label">Debt / Equity</span>
-                                    <span class="level-val">{c_stock['debt_to_equity']}</span>
-                                </div>
-                            </div>
-                            <div class="top10-grid-levels" style="grid-template-columns: repeat(2, 1fr);background:#161B22;">
-                                <div class="level-item">
-                                    <span class="level-label">3-Year Compounded Target</span>
-                                    <span class="level-val val-target">₹{t3y:,.0f} (+{round(((t3y-p)/p)*100, 1)}%)</span>
-                                </div>
-                                <div class="level-item">
-                                    <span class="level-label">5-Year Wealth Multiplier</span>
-                                    <span class="level-val val-profit">₹{t5y:,.0f} (+{round(((t5y-p)/p)*100, 1)}%)</span>
-                                </div>
-                            </div>
-                            <div class="top10-sizing">
-                                <span>SUGGESTED SIP PLAN</span>
-                                <span>Invest <strong>₹{monthly_sip:,.0f}/month</strong> → Projected to grow from ₹{sip_invested:,.0f} to <strong>₹{sip_5y_val:,.0f}</strong> in 5 years</span>
-                            </div>
-                        </div>
-                        """),
-                        unsafe_allow_html=True,
-                    )
+                    card_html_t2 = "\n".join([
+                        f'<div class="top10-card" style="border-top: 4px solid #3FB950;margin-bottom:18px;">',
+                        f'<div class="top10-header">',
+                        f'<div>',
+                        f'<span class="moat-pill moat-wide">🏰 {esc(moat)}</span>',
+                        f'<span class="top10-symbol">&nbsp;{esc(tick)}</span>',
+                        f'<div class="top10-sector">{esc(name)} · LTP: <strong>₹{p:,.2f}</strong></div>',
+                        f'</div>',
+                        f'<div style="text-align:right;">',
+                        f'<div style="font-family:var(--mono);font-size:18px;font-weight:700;color:#3FB950;">~{cagr:.1f}% Projected CAGR</div>',
+                        f'<div style="font-size:11px;color:var(--text-muted);font-family:var(--mono);">Quality: {score:.0f}/100 · {esc(tier.split(" ")[1])}</div>',
+                        f'</div>',
+                        f'</div>',
+                        f'<div class="top10-grid-levels" style="grid-template-columns: repeat(3, 1fr);">',
+                        f'<div class="level-item"><span class="level-label">P/E Valuation</span><span class="level-val">{c_stock["trailing_pe"]}</span></div>',
+                        f'<div class="level-item"><span class="level-label">Return on Equity (ROE)</span><span class="level-val" style="color:#3FB950;">{c_stock["roe_pct"]}%</span></div>',
+                        f'<div class="level-item"><span class="level-label">Debt / Equity</span><span class="level-val">{c_stock["debt_to_equity"]}</span></div>',
+                        f'</div>',
+                        f'<div class="top10-grid-levels" style="grid-template-columns: repeat(2, 1fr);background:#161B22;">',
+                        f'<div class="level-item"><span class="level-label">3-Year Compounded Target</span><span class="level-val val-target">₹{t3y:,.0f} (+{round(((t3y-p)/p)*100, 1)}%)</span></div>',
+                        f'<div class="level-item"><span class="level-label">5-Year Wealth Multiplier</span><span class="level-val val-profit">₹{t5y:,.0f} (+{round(((t5y-p)/p)*100, 1)}%)</span></div>',
+                        f'</div>',
+                        f'<div class="top10-sizing">',
+                        f'<span>SUGGESTED SIP PLAN</span>',
+                        f'<span>Invest <strong>₹{monthly_sip:,.0f}/month</strong> → Projected to grow from ₹{sip_invested:,.0f} to <strong>₹{sip_5y_val:,.0f}</strong> in 5 years</span>',
+                        f'</div>',
+                        f'</div>'
+                    ])
+                    st.markdown(card_html_t2, unsafe_allow_html=True)
 
                     col_w1, col_w2, col_w3 = st.columns([2, 2, 3])
                     with col_w1:
