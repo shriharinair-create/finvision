@@ -85,20 +85,45 @@ def render_mode0():
 
     st.divider()
 
+    # ── Custom Stock Lookup ──────────────────────────────────────────────────
+    st.markdown("#### 🔍 Check Any Custom Stock")
+    c_in, c_act = st.columns([4, 1])
+    with c_in:
+        custom_input = st.text_input(
+            "Enter Stock Symbol (e.g. TATASTEEL, ZOMATO, SBIN, ITC, HAL, AAPL)",
+            key="copilot_custom_ticker",
+            placeholder="Type any symbol (e.g. ZOMATO, TATASTEEL, SBIN, HAL)...",
+            label_visibility="collapsed"
+        ).strip().upper()
+    with c_act:
+        check_btn = st.button("🔎 Analyze", use_container_width=True)
+
+    active_custom_ticker = None
+    if custom_input:
+        t_clean = custom_input
+        if not (t_clean.endswith(".NS") or t_clean.endswith(".BO") or "=" in t_clean or "^" in t_clean):
+            t_clean = f"{t_clean}.NS"
+        active_custom_ticker = t_clean
+        st.success(f"🎯 Copilot is analyzing custom stock: **{active_custom_ticker}**")
+
     # ── ⚡ TRACK 1: DAY TRADING & QUICK PROFITS ────────────────────────────────
     if track_choice.startswith("⚡"):
         st.markdown("### ⚡ Today's AI Master Day Trading Setups")
         st.caption(f"Mathematically sized for a **₹{user_budget:,.0f}** account with **₹{user_budget*risk_pct:,.0f}** maximum risk protection.")
 
+        day_tickers_to_scan = list(RECOMMENDED_DAY_TICKERS)
+        if active_custom_ticker:
+            day_tickers_to_scan = [active_custom_ticker] + [t for t in RECOMMENDED_DAY_TICKERS if t != active_custom_ticker]
+
         # Download sample universe for today's top picks
         with st.spinner("🤖 Copilot is scanning market order flow, volatility bands & news catalysts..."):
             try:
-                bulk_df = yf.download(RECOMMENDED_DAY_TICKERS, period="3mo", interval="1d", group_by="ticker", progress=False)
+                bulk_df = yf.download(day_tickers_to_scan, period="3mo", interval="1d", group_by="ticker", progress=False)
             except Exception:
                 bulk_df = None
 
         setups = []
-        for tick in RECOMMENDED_DAY_TICKERS:
+        for tick in day_tickers_to_scan:
             try:
                 if bulk_df is not None and tick in bulk_df:
                     df_t = bulk_df[tick].dropna(how="all")
@@ -258,8 +283,10 @@ def render_mode0():
         # Analyze top blue-chip compounders
         compounders = []
         top_picks = ["RELIANCE.NS", "TCS.NS", "TITAN.NS", "HDFCBANK.NS", "TATAMOTORS.NS"]
+        if active_custom_ticker:
+            top_picks = [active_custom_ticker] + [t for t in top_picks if t != active_custom_ticker]
         
-        with st.spinner("🤖 Copilot is analyzing balance sheet debt, ROE profitability & Moat resilience..."):
+        with st.spinner(f"🤖 Copilot is analyzing balance sheet debt, ROE profitability & Moat resilience for {len(top_picks)} stocks..."):
             for tick in top_picks:
                 try:
                     f_data = analyze_stock_fundamentals(tick)
