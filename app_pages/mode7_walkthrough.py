@@ -13,6 +13,12 @@ import textwrap
 
 
 def render_mode7():
+    c_back, _ = st.columns([1.5, 3])
+    with c_back:
+        if st.button("🔙 Back to Smart Copilot", key="walkthrough_back_to_copilot_btn", use_container_width=True):
+            st.session_state["target_operating_mode"] = "copilot"
+            st.rerun()
+
     st.markdown(
         textwrap.dedent("""
         <div class="copilot-hero-card" style="margin-bottom:20px;">

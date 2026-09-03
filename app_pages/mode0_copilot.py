@@ -120,6 +120,14 @@ def render_mode0():
         unsafe_allow_html=True,
     )
 
+    c_walk_btn, c_walk_txt = st.columns([1.5, 3])
+    with c_walk_btn:
+        if st.button("📖 App Walkthrough & User Guide", key="copilot_open_walkthrough_btn", use_container_width=True):
+            st.session_state["target_operating_mode"] = "walkthrough"
+            st.rerun()
+    with c_walk_txt:
+        st.caption("💡 New to FinVision? Learn how to execute setups, GTT orders & compounders.")
+
     # ── AI Market Season & Regime Radar ──────────────────────────────────────
     market_regime = detect_indian_market_regime()
     try:
