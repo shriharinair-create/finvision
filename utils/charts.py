@@ -566,17 +566,19 @@ def make_correlation_heatmap(corr_data: dict) -> go.Figure:
 
 
 
-def plot_intraday_5m_session_forecast(session_fc: dict[str, Any], title: str = "5-Minute Session Candlestick Forecast (09:15 - 15:30 IST)") -> go.Figure:
+def plot_intraday_5m_session_forecast(session_fc: dict[str, Any], title: Optional[str] = None) -> go.Figure:
     """
-    Renders an expansive, granular 75-bar 5-minute candlestick trajectory chart.
-    Features:
-      - High-density granular Y-axis price labels with rupee formatting (2 decimals)
-      - Minor tick sub-grids & crosshair coordinate spikes
-      - Unified hover tooltips with exact 2-decimal numbers
-      - Orange Intraday VWAP line (#FF9800) & Blue EMA 9 line (#2962FF)
-      - Shaded 80% Confidence Interval Envelopes
-      - 30-min Opening Range Breakout (ORB) boundaries
+    Renders an expansive candlestick trajectory chart for either:
+      - 15-Minute Institutional Standard (25 bars, low-noise signal)
+      - 5-Minute Granular Scalp (75 bars)
     """
+    tf = session_fc.get("timeframe", "15m")
+    if not title:
+        if tf == "15m":
+            title = "15-Minute Institutional Candlestick Forecast (09:15 - 15:30 IST) — Low-Noise"
+        else:
+            title = "5-Minute Session Candlestick Forecast (09:15 - 15:30 IST)"
+
     df = session_fc.get("trajectory_df", pd.DataFrame())
     if df.empty:
         fig = go.Figure()

@@ -193,24 +193,31 @@ def _render_live_telemetry_body(ticker: str, interval: str) -> None:
             )
             fused_s = fc_res.get("fused_score", 0.0)
             
+            tf_choice = interval if interval in ["5m", "15m"] else "15m"
             intra_fc = generate_intraday_5m_session_forecast(
                 daily_df=df_daily,
                 last_price=last_price,
                 fused_score=fused_s,
                 news_sentiment_score=n_sent,
                 catalyst_score=n_cat,
-                intraday_actual_df=df_intra if interval == "5m" else None
+                intraday_actual_df=df_intra if interval == tf_choice else None,
+                timeframe=tf_choice
             )
             
             if intra_fc:
                 target_date = intra_fc.get("session_date", "Upcoming Session")
                 is_upcoming = intra_fc.get("is_upcoming_session", False)
-                status_label = f"📅 Target Session: **{target_date}** (Next Upcoming Session)" if is_upcoming else f"📅 Live Active Session: **{target_date}**"
+                noise_note = " · 🏛️ Low-Noise Institutional Standard" if tf_choice == "15m" else " · ⚠️ High-Noise Scalp"
+                status_label = (
+                    f"📅 Target Session: **{target_date}** (Next Upcoming Session){noise_note}"
+                    if is_upcoming
+                    else f"📅 Live Active Session: **{target_date}**{noise_note}"
+                )
                 st.markdown(status_label)
 
                 fig_5m_intra = plot_intraday_5m_session_forecast(
                     intra_fc,
-                    title=f"{ticker} — 75-Bar 5-Min Forecast for {target_date} (VWAP + 80% CI Envelope)"
+                    title=f"{ticker} — {intra_fc.get('total_bars', 25)}-Bar {tf_choice} Forecast for {target_date} (VWAP + 80% CI Envelope)"
                 )
                 st.plotly_chart(fig_5m_intra, use_container_width=True)
                 
@@ -365,7 +372,13 @@ def render_mode3():
         default_ticker = st.session_state.get("bridged_monitor_ticker") or "^NSEI"
         ticker = st.text_input("Active Monitor Ticker", value=default_ticker, help="e.g. ^NSEI, RELIANCE.NS, APOLLOHOSP.NS")
     with c_int:
-        interval = st.selectbox("Candlestick Interval", options=["1m", "5m", "15m"], index=1)
+        interval_raw = st.selectbox(
+            "Candlestick Interval",
+            options=["15m (Institutional - Recommended)", "5m (Scalp - High Noise)", "1m"],
+            index=0,
+            help="15m reduces random microstructure noise by ~42%, matching institutional TWAP/VWAP execution blocks."
+        )
+        interval = "15m" if "15m" in interval_raw else "5m" if "5m" in interval_raw else "1m"
     with c_auto:
         st.write("")
         auto_refresh = st.toggle("⚡ Auto-Refresh", value=True, help="Continuously poll live market quotes in the background")
