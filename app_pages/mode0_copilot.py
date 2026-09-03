@@ -452,7 +452,10 @@ def render_mode0():
 
                 bp = compute_intraday_trade_blueprint(df_t)
                 fc = compute_quantitative_confluence_forecast(df_t)
-                last_p = float(df_t["Close"].iloc[-1])
+                clean_close = df_t["Close"].dropna()
+                if clean_close.empty:
+                    continue
+                last_p = float(clean_close.iloc[-1])
 
                 b_entry = bp.get("buy_entry", last_p)
                 t1 = bp.get("sell_target_1", last_p * 1.015)
