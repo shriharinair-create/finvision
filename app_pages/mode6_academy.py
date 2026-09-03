@@ -21,9 +21,12 @@ from utils.market_store import (
     log_trade_postmortem,
     get_postmortem_history,
     get_recent_regime_history,
+    save_veteran_rule,
+    get_veteran_rules,
 )
 from utils.components import render_eli5_box, esc
 from utils.trade_postmortem import diagnose_trade_postmortem
+from utils.veteran_evaluator import fact_check_veteran_rule
 
 
 ACADEMY_LESSONS = [
@@ -112,9 +115,10 @@ def render_mode6():
     st.markdown("## 🎓 AI Trading Academy & Paper Trading Journal")
     st.caption("Learn the institutional ropes of smart risk management, explore micro-lessons, and test strategies risk-free in your simulated portfolio.")
 
-    tab_journal, tab_evolution, tab_academy, tab_glossary = st.tabs([
+    tab_journal, tab_evolution, tab_veteran, tab_academy, tab_glossary = st.tabs([
         "📓 Live Paper Trading Portfolio",
         "🧠 AI Post-Mortem & Evolution Lab",
+        "🎖️ Veteran Wisdom Fact-Check Lab",
         "🎓 AI Trading Academy & Lessons",
         "📖 Financial Jargon Translator",
     ])
@@ -301,7 +305,84 @@ def render_mode6():
             ])
             st.dataframe(df_reg, use_container_width=True, hide_index=True)
 
-    # ── TAB 3: AI TRADING ACADEMY & LESSONS ────────────────────────────────────
+    # ── TAB 3: VETERAN WISDOM & FACT-CHECK LAB ────────────────────────────────
+    with tab_veteran:
+        st.markdown("### 🎖️ Veteran Wisdom Fact-Check & Knowledge Ingestion Lab")
+        st.caption(
+            "Heard a trading rule, tip, or heuristic from a Dalal Street veteran, mentor, or financial book? "
+            "Input it below. The AI Learner Module will run an empirical walk-forward backtest across 2 years of actual NSE data, "
+            "measure its statistical edge, and decide whether to incorporate it into its active brain or reject it as an unbacked retail myth."
+        )
+
+        with st.form("veteran_wisdom_form"):
+            c_rule, c_author = st.columns([3, 1])
+            with c_rule:
+                v_text = st.text_area(
+                    "Enter Veteran Advice / Trading Rule",
+                    placeholder="e.g. When Reliance RSI drops below 40, buy for a 5 day swing...\nOr: When Tata Motors is above 50 EMA on high volume, buy for a 1 week swing...",
+                    height=85
+                ).strip()
+            with c_author:
+                v_source = st.text_input("Source / Mentor Name", value="Senior Dalal Street Veteran")
+                st.caption("AI will test win rate, profit factor, and statistical edge.")
+
+            submit_fact_check = st.form_submit_button("🧪 Run AI Fact-Check & Empirical Backtest", use_container_width=True)
+
+        if submit_fact_check and v_text:
+            with st.spinner("🤖 AI Learner is parsing rule conditions and running a 2-year walk-forward backtest..."):
+                fact_res = fact_check_veteran_rule(v_text, author_or_source=v_source)
+                save_veteran_rule(fact_res)
+
+            st.markdown(
+                f"""
+                <div style="background:#161B22; border:2px solid {fact_res['badge_color']}; border-radius:10px; padding:16px; margin:14px 0;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+                        <span style="font-size:16px; font-weight:800; color:{fact_res['badge_color']};">{fact_res['verdict_badge']}</span>
+                        <span style="font-size:12px; color:#8B949E;">Target Stock: <strong>{fact_res.get('target_ticker', 'N/A')}</strong> | Source: {fact_res.get('author', 'Mentor')}</span>
+                    </div>
+                    <div style="margin-top:10px; font-size:13px; color:#E6EDF3; line-height:1.5;">
+                        {fact_res['summary_report']}
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+
+            v_col1, v_col2, v_col3, v_col4 = st.columns(4)
+            v_col1.metric("Historical Triggers", fact_res["occurrences"])
+            v_col2.metric("Win Rate %", f"{fact_res['win_rate_pct']:.1f}%")
+            v_col3.metric("Profit Factor", f"{fact_res['profit_factor']:.2f}×")
+            v_col4.metric("Avg Return / Trade", f"{fact_res['avg_return_pct']:+.2f}%")
+
+            if fact_res.get("signals"):
+                st.markdown("##### 📜 Recent Historical Simulation Bars")
+                st.dataframe(pd.DataFrame(fact_res["signals"]), use_container_width=True, hide_index=True)
+
+        st.divider()
+
+        # Knowledge Base Table
+        st.markdown("#### 📚 Active Veteran Knowledge Base Registry")
+        all_rules = get_veteran_rules()
+        if not all_rules:
+            st.info("No veteran rules tested yet. Try testing a rule above (e.g. 'When Reliance RSI drops below 40, buy for a 5 day swing')!")
+        else:
+            df_v = pd.DataFrame([
+                {
+                    "ID": f"#{r['id']}",
+                    "Date": r["created_at"][:10] if r.get("created_at") else "—",
+                    "Target": r["target_ticker"],
+                    "Source": r["author_or_source"],
+                    "Rule Description": r["rule_text"][:60] + ("..." if len(r["rule_text"]) > 60 else ""),
+                    "Triggers": r["occurrences"],
+                    "Win Rate": f"{r['win_rate_pct']:.1f}%",
+                    "Profit Factor": f"{r['profit_factor']:.2f}×",
+                    "Verdict Status": r["status"]
+                }
+                for r in all_rules
+            ])
+            st.dataframe(df_v, use_container_width=True, hide_index=True)
+
+    # ── TAB 4: AI TRADING ACADEMY & LESSONS ────────────────────────────────────
     with tab_academy:
         st.markdown("### 🎓 FinVision Institutional Trading & Investing Academy")
         st.caption("Bite-sized institutional trading wisdom to turn zero-knowledge beginners into disciplined, consistently profitable operators.")

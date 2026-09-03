@@ -176,6 +176,24 @@ def init_db() -> None:
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+
+        # 9. Veteran Wisdom & Fact-Check Registry
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS veteran_wisdom_registry (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                rule_text TEXT NOT NULL,
+                author_or_source TEXT NOT NULL,
+                target_ticker TEXT NOT NULL,
+                occurrences INTEGER DEFAULT 0,
+                win_rate_pct REAL DEFAULT 0.0,
+                avg_return_pct REAL DEFAULT 0.0,
+                profit_factor REAL DEFAULT 0.0,
+                status TEXT NOT NULL, -- 'VALIDATED_ACTIVE', 'REJECTED_MYTH', 'MONITORING'
+                verdict_badge TEXT,
+                summary_report TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
         conn.commit()
 
 
@@ -608,4 +626,50 @@ def get_recent_regime_history(limit: int = 15) -> list[dict[str, Any]]:
             ORDER BY session_date DESC LIMIT ?
         """, (limit,))
         return [dict(r) for r in cursor.fetchall()]
+
+
+# ── Veteran Wisdom & Fact-Check Registry ──────────────────────────────────────
+
+def save_veteran_rule(eval_result: dict[str, Any]) -> int:
+    """Stores an evaluated veteran rule into the registry."""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO veteran_wisdom_registry (
+                rule_text, author_or_source, target_ticker, occurrences,
+                win_rate_pct, avg_return_pct, profit_factor, status,
+                verdict_badge, summary_report
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            eval_result.get("parsed", {}).get("raw_text", ""),
+            eval_result.get("author", "Veteran Trader"),
+            eval_result.get("target_ticker", "N/A"),
+            int(eval_result.get("occurrences", 0)),
+            float(eval_result.get("win_rate_pct", 0.0)),
+            float(eval_result.get("avg_return_pct", 0.0)),
+            float(eval_result.get("profit_factor", 0.0)),
+            eval_result.get("status", "MONITORING"),
+            eval_result.get("verdict_badge", ""),
+            eval_result.get("summary_report", "")
+        ))
+        conn.commit()
+        return cursor.lastrowid
+
+
+def get_veteran_rules(status: Optional[str] = None) -> list[dict[str, Any]]:
+    """Retrieves tested veteran rules from the registry."""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        if status:
+            cursor.execute("""
+                SELECT * FROM veteran_wisdom_registry
+                WHERE status = ? ORDER BY id DESC
+            """, (status,))
+        else:
+            cursor.execute("""
+                SELECT * FROM veteran_wisdom_registry
+                ORDER BY id DESC
+            """)
+        return [dict(r) for r in cursor.fetchall()]
+
 
