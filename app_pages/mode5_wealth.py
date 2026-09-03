@@ -35,7 +35,8 @@ def render_mode5():
     st.caption("Identify wide-moat market leaders, evaluate balance sheet quality, and simulate multi-year SIP compounding.")
 
     # ── Master Tabs ───────────────────────────────────────────────────────────
-    tab_baskets, tab_analyzer, tab_sip_sim = st.tabs([
+    tab_megatrends, tab_baskets, tab_analyzer, tab_sip_sim = st.tabs([
+        "🚀 Asymmetric 10x Megatrends",
         "🏛️ Curated Wealth Baskets",
         "🔬 Single-Stock Fundamental Deep Dive",
         "📈 Interactive SIP & Compounding Simulator",

@@ -33,6 +33,7 @@ from utils.market_store import log_paper_trade, log_regime_snapshot, get_stock_a
 from utils.components import render_eli5_box, esc
 from utils.regime import detect_indian_market_regime
 from utils.meta_labeling import evaluate_meta_labeling_filter
+from utils.user_prefs import get_user_preferences, save_user_preference
 from utils.veteran_evaluator import fact_check_veteran_rule
 import textwrap
 
@@ -184,7 +185,12 @@ def render_mode0():
                 )
     st.markdown("<div style='margin-bottom:14px;'></div>", unsafe_allow_html=True)
 
-    # ── Persona & Track Selector ──────────────────────────────────────────────
+    # ── Persona & Track Selector (Persisted User Preferences) ─────────────────
+    prefs = get_user_preferences()
+    saved_budget = float(prefs.get("total_capital", 500000.0))
+    saved_risk_prof = prefs.get("risk_profile", "Balanced (1.0% max risk)")
+    saved_goal_idx = int(prefs.get("trading_goal_index", 0))
+
     c_track, c_budget, c_risk = st.columns([3, 2, 2])
     with c_track:
         track_choice = st.radio(
@@ -193,26 +199,36 @@ def render_mode0():
                 "⚡ Quick Profits & Day Trading (Intraday Scalps: Minutes to 1 Day)",
                 "🌱 Multi-Year Wealth Compounding (Long-Term Stocks: 1 to 5 Years)",
             ],
-            index=0,
+            index=saved_goal_idx if saved_goal_idx in [0, 1] else 0,
         )
+        cur_goal_idx = 0 if "Quick Profits" in track_choice else 1
+        if cur_goal_idx != saved_goal_idx:
+            save_user_preference("trading_goal_index", cur_goal_idx)
+
     with c_budget:
         user_budget = st.number_input(
             "💰 Your Trading Budget (₹)",
             min_value=1_000.0,
             max_value=10_000_000.0,
-            value=st.session_state.get("total_capital", 50_000.0),
+            value=float(st.session_state.get("total_capital", saved_budget)),
             step=5_000.0,
-            help="The amount of capital you want to allocate for these setups.",
+            help="The amount of capital you want to allocate for these setups (automatically saved).",
         )
+        if user_budget != saved_budget:
+            save_user_preference("total_capital", user_budget)
         st.session_state["total_capital"] = user_budget
 
     with c_risk:
+        risk_options = ["Conservative (0.5% max risk)", "Balanced (1.0% max risk)", "Active (2.0% max risk)"]
+        risk_idx = risk_options.index(saved_risk_prof) if saved_risk_prof in risk_options else 1
         risk_profile = st.selectbox(
             "🛡️ Risk Appetite",
-            options=["Conservative (0.5% max risk)", "Balanced (1.0% max risk)", "Active (2.0% max risk)"],
-            index=1,
+            options=risk_options,
+            index=risk_idx,
             help="Strict mathematical stop-loss cap on capital per trade.",
         )
+        if risk_profile != saved_risk_prof:
+            save_user_preference("risk_profile", risk_profile)
         risk_pct = 0.005 if "Conservative" in risk_profile else 0.02 if "Active" in risk_profile else 0.01
         st.session_state["risk_pct"] = risk_pct
 

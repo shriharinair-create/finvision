@@ -33,6 +33,7 @@ from app_pages.mode3_intraday import render_mode3
 from app_pages.mode4_forecast import render_mode4
 from app_pages.mode5_wealth import render_mode5
 from app_pages.mode6_academy import render_mode6
+from utils.user_prefs import get_user_preferences, save_user_preference
 
 inject_css()
 
@@ -157,11 +158,14 @@ with st.sidebar:
     st.divider()
 
     st.markdown("### Position Sizing & Budget")
+    saved_cap = float(get_user_preferences().get("total_capital", 500000.0))
     total_capital = st.number_input(
         "Trading Capital (₹)",
-        min_value=1_000.0, value=st.session_state.get("total_capital", 500_000.0), step=10_000.0,
-        help="Used to suggest a share count sized strictly to your risk budget.",
+        min_value=1_000.0, value=float(st.session_state.get("total_capital", saved_cap)), step=10_000.0,
+        help="Used to suggest a share count sized strictly to your risk budget (automatically saved).",
     )
+    if total_capital != saved_cap:
+        save_user_preference("total_capital", total_capital)
     risk_pct_input = st.slider(
         "Risk per trade (%)",
         min_value=0.1, max_value=5.0, value=st.session_state.get("risk_pct", 0.01) * 100.0, step=0.1,
