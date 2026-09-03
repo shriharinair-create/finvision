@@ -36,6 +36,10 @@ from utils.meta_labeling import evaluate_meta_labeling_filter
 from utils.user_prefs import get_user_preferences, save_user_preference
 from utils.veteran_evaluator import fact_check_veteran_rule
 from utils.macro import get_live_cross_asset_macro
+from utils.tax_calculator import compute_indian_market_friction
+from utils.gtt import compute_gtt_order_parameters
+from utils.broker_gateway import build_broker_order_payload, dispatch_broker_order, SUPPORTED_BROKERS
+from utils.ml_ensemble import retrain_ensemble_from_trade_journal
 import textwrap
 
 
@@ -340,8 +344,38 @@ def render_mode0():
 
     # ── ⚡ TRACK 1: DAY TRADING & QUICK PROFITS ────────────────────────────────
     if track_choice.startswith("⚡"):
-        st.markdown("### ⚡ Today's AI Master Day Trading Setups")
-        st.caption(f"Mathematically sized for a **₹{user_budget:,.0f}** account with **₹{user_budget*risk_pct:,.0f}** maximum risk protection.")
+        # Live Broker Gateway Configuration (OFF by Default)
+        with st.expander("⚡ Live Broker Execution Gateway (Optional & Switched OFF by Default)", expanded=False):
+            enable_broker = st.toggle(
+                "Enable Live Broker Routing (Fenix / Kite / Upstox)",
+                value=st.session_state.get("broker_routing_enabled", False),
+                key="toggle_broker_routing",
+                help="Switched OFF by default for safety. When disabled, orders are simulated in Paper Trading mode with zero financial risk."
+            )
+            st.session_state["broker_routing_enabled"] = enable_broker
+            
+            if enable_broker:
+                st.warning("⚠️ **Live Broker Mode Active**: Order buttons will attempt to dispatch real trades to your configured broker endpoint.")
+                b_col1, b_col2 = st.columns(2)
+                with b_col1:
+                    sel_broker = st.selectbox("Select Active Broker", SUPPORTED_BROKERS, index=0, key="sel_broker_copilot")
+                with b_col2:
+                    wb_url = st.text_input("Broker Webhook / API URL", placeholder="https://api.kite.trade/orders or n8n webhook", type="password", key="wb_url_copilot")
+                st.caption(f"Connected to **{sel_broker}**. Orders will be formatted using official exchange JSON specifications.")
+            else:
+                st.caption("🛡️ **Safe Simulation Mode Active**: All trades are recorded to your offline SQLite Paper Trading journal (`finvision_data.db`) with zero real capital risk.")
+
+        col_head1, col_head2 = st.columns([3, 2])
+        with col_head1:
+            st.markdown("### ⚡ Today's AI Master Day Trading Setups")
+            st.caption(f"Mathematically sized for a **₹{user_budget:,.0f}** account with **₹{user_budget*risk_pct:,.0f}** maximum risk protection.")
+        with col_head2:
+            if st.button("🔄 Retrain ML on Trade Journal", key="btn_retrain_ml", use_container_width=True):
+                retrain_res = retrain_ensemble_from_trade_journal()
+                if retrain_res["status"] == "SUCCESS":
+                    st.toast(retrain_res["message"], icon="🤖")
+                else:
+                    st.toast(f"ℹ️ {retrain_res['message']}", icon="📓")
 
         day_tickers_to_scan = list(RECOMMENDED_DAY_TICKERS)
         if active_custom_ticker:
@@ -485,6 +519,22 @@ def render_mode0():
                 level1_lbl = "1. Short Limit Entry" if is_short else "1. Place Buy Limit"
                 level2_lbl = "2. Cover Target (Scalp)" if is_short else "2. Take Profit (Scalp)"
 
+                friction_res = compute_indian_market_friction(
+                    entry_price=s["entry"],
+                    exit_price=s["target1"],
+                    shares=s["shares"],
+                    is_intraday=True
+                )
+
+                gtt_info = compute_gtt_order_parameters(
+                    ticker=tick,
+                    current_price=s["price"],
+                    entry_price=s["entry"],
+                    stop_loss=s["stop_loss"],
+                    target1=s["target1"],
+                    shares=s["shares"]
+                )
+
                 with st.container():
                     card_html_t1 = "\n".join([
                         f'<div class="top10-card" style="border-left: 4px solid #58A6FF;margin-bottom:18px;">',
@@ -512,6 +562,11 @@ def render_mode0():
                         f'<span>EXACT SIZED ORDER</span>',
                         f'<span>{order_verb} <strong>{s["shares"]:,} shares</strong> (₹{s["pos_val"]:,.0f} value) · Max Loss strictly capped at ₹{s["risk_val"]:,.0f} ({s["meta_eval"]["bet_sizing_factor"]}x sizing)</span>',
                         f'</div>',
+                        f'<div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:6px; font-size:11px; background:#0B1E12; border:1px solid #238636; border-radius:6px; padding:6px 10px; margin-top:6px;">',
+                        f'<span>💰 <strong>Gross:</strong> +₹{est_profit_inr:,.0f} · <strong>Taxes & Brokerage:</strong> -₹{friction_res["total_friction"]:,.0f}</span>',
+                        f'<span style="color:#3FB950; font-weight:800;">✨ Net Take-Home: +₹{friction_res["net_profit"]:,.0f} ({friction_res["net_return_pct"]:+.2f}%)</span>',
+                        f'<span style="color:#8B949E; font-size:10px;">Break-Even: ₹{friction_res["break_even_price"]:,.2f}</span>',
+                        f'</div>',
                         f'<div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:6px; font-size:11px; background:#0D1117; border:1px solid #21262D; border-radius:6px; padding:6px 10px; margin-top:8px;">',
                         f'<span>📉 <strong>1D 95% VaR:</strong> ₹{s["var_inr"]:,.0f} (CVaR Tail Loss: ₹{s["cvar_inr"]:,.0f})</span>',
                         f'<span style="color:#58A6FF; font-weight:700;">{s["ml_badge"]}</span>',
@@ -521,20 +576,46 @@ def render_mode0():
                     ])
                     st.markdown(card_html_t1, unsafe_allow_html=True)
 
+                    # GTT Ready-to-Copy Expander
+                    with st.expander(f"📋 Zerodha / Upstox GTT Ready-to-Copy Card ({tick})", expanded=False):
+                        st.markdown(f"**GTT Single Buy Trigger:** `₹{gtt_info['single_gtt']['trigger_price']:,.2f}` | **Limit Price:** `₹{gtt_info['single_gtt']['limit_price']:,.2f}`")
+                        st.markdown(f"**GTT OCO Stop Trigger:** `₹{gtt_info['oco_gtt']['sl_trigger_price']:,.2f}` | **Target Trigger:** `₹{gtt_info['oco_gtt']['target_trigger_price']:,.2f}`")
+                        st.code(gtt_info["single_gtt"]["copy_text"] + "\n\n" + gtt_info["oco_gtt"]["copy_text"], language="text")
+                        st.caption("📋 1-Click Copy: Paste these parameters directly into Zerodha Kite / Groww GTT order creator.")
+
                     # Interactive actions & ELI5
                     col_act1, col_act2, col_act3 = st.columns([2, 2, 3])
                     with col_act1:
-                        if st.button(f"📓 Paper Trade: {tick}", key=f"btn_pt_{tick}_{s_idx}", use_container_width=True):
-                            trade_id = log_paper_trade(
-                                ticker=tick,
-                                trade_type="BUY_INTRADAY",
-                                entry_price=s["entry"],
-                                target_price=s["target1"],
-                                stop_loss_price=s["stop_loss"],
-                                shares=s["shares"],
-                                notes=f"Copilot Setup #{s_idx}: {s['action']} | Meta: {s['meta_eval']['status_badge']}",
-                            )
-                            st.toast(f"✅ Paper Trade #{trade_id} logged for {tick} ({s['shares']} shares)!", icon="📓")
+                        if st.session_state.get("broker_routing_enabled", False):
+                            if st.button(f"🚀 Deploy to Broker: {tick}", key=f"btn_brk_{tick}_{s_idx}", use_container_width=True):
+                                p_load = build_broker_order_payload(
+                                    broker=st.session_state.get("sel_broker_copilot", "Zerodha Kite"),
+                                    ticker=tick,
+                                    transaction_type="SELL" if is_short else "BUY",
+                                    quantity=s["shares"],
+                                    price=s["entry"],
+                                    stop_loss=s["stop_loss"],
+                                    target=s["target1"],
+                                )
+                                dispatch_res = dispatch_broker_order(
+                                    broker=st.session_state.get("sel_broker_copilot", "Zerodha Kite"),
+                                    payload=p_load,
+                                    webhook_url=st.session_state.get("wb_url_copilot", ""),
+                                    dry_run=not bool(st.session_state.get("wb_url_copilot", "")),
+                                )
+                                st.toast(dispatch_res["message"], icon="🚀")
+                        else:
+                            if st.button(f"📓 Paper Trade: {tick}", key=f"btn_pt_{tick}_{s_idx}", use_container_width=True):
+                                trade_id = log_paper_trade(
+                                    ticker=tick,
+                                    trade_type="BUY_INTRADAY",
+                                    entry_price=s["entry"],
+                                    target_price=s["target1"],
+                                    stop_loss_price=s["stop_loss"],
+                                    shares=s["shares"],
+                                    notes=f"Copilot Setup #{s_idx}: {s['action']} | Meta: {s['meta_eval']['status_badge']}",
+                                )
+                                st.toast(f"✅ Paper Trade #{trade_id} logged for {tick} ({s['shares']} shares)!", icon="📓")
                     with col_act2:
                         if st.button(f"🔬 Forecast Lab: {tick}", key=f"btn_fc_cop_{tick}_{s_idx}", use_container_width=True):
                             st.session_state["bridged_forecast_ticker"] = tick
@@ -551,7 +632,8 @@ def render_mode0():
                                     f"You only lose ₹{s['risk_val']:,.0f} (which is strictly capped by your risk rules).\n"
                                     f"4. Institutional Tail Risk: 1-Day 95% Value-at-Risk (VaR) is ₹{s['var_inr']:,.0f}. In an extreme 5% tail shock, expected loss is ₹{s['cvar_inr']:,.0f}.\n"
                                     f"5. Machine Learning Consensus: {s['ml_badge']} (Non-linear Random Forest & Logistic Regression cross-validation).\n"
-                                    f"6. AI Veteran Meta-Model: {s['meta_eval']['verdict_explanation']}"
+                                    f"6. Net Take-Home Rupees: Gross profit is ₹{est_profit_inr:,.0f}. After STT, GST, exchange fees, and brokerage (-₹{friction_res['total_friction']:,.0f}), your net profit is +₹{friction_res['net_profit']:,.0f} ({friction_res['net_return_pct']:+.2f}% net yield).\n"
+                                    f"7. AI Veteran Meta-Model: {s['meta_eval']['verdict_explanation']}"
                                 ),
                                 key_rules=[
                                     "Never trade without entering the stop loss in your broker app (Zerodha/Groww).",
