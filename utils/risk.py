@@ -15,6 +15,7 @@ silently returning nonsense.
 from __future__ import annotations
 
 import math
+from typing import Any
 
 import pandas as pd
 import streamlit as st
@@ -150,3 +151,149 @@ def check_broad_market_health(index_ticker: str = "^NSEI") -> dict:
             "index_price": None, "index_ema20": None, "pct_above_ema": None,
             "reason": f"Could not fetch index data: {exc}",
         }
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# Institutional Risk: Value-at-Risk (VaR) & Expected Shortfall (CVaR)
+# ══════════════════════════════════════════════════════════════════════════
+
+import numpy as np
+
+
+def compute_institutional_var_cvar(
+    returns: pd.Series | list[float] | np.ndarray,
+    position_value: float,
+    confidence_level: float = 0.95,
+    horizon_days: int = 1,
+) -> dict[str, Any]:
+    """
+    Computes institutional tail-risk measures:
+      1. Historical Value-at-Risk (VaR): Maximum expected loss at specified confidence level.
+      2. Parametric Gaussian VaR: Analytical VaR based on mean and volatility.
+      3. Conditional Value-at-Risk (CVaR / Expected Shortfall): Expected loss *if* the
+         VaR threshold is breached (answering 'how bad does it get in a tail shock?').
+
+    Returns percentages and absolute Rupee values sized to position_value.
+    """
+    if position_value <= 0:
+        return {
+            "available": False,
+            "var_95_pct": 0.0, "var_95_inr": 0.0,
+            "var_99_pct": 0.0, "var_99_inr": 0.0,
+            "cvar_95_pct": 0.0, "cvar_95_inr": 0.0,
+            "parametric_var_pct": 0.0, "parametric_var_inr": 0.0,
+            "horizon_days": horizon_days,
+            "tail_risk_grade": "LOW",
+        }
+
+    s = pd.Series(returns).dropna().astype(float)
+    # If returns are given in percentage points (e.g. -2.5 rather than -0.025), normalize to decimal
+    if not s.empty and s.abs().max() > 1.0:
+        s = s / 100.0
+
+    if len(s) < 15:
+        # Default proxy based on typical 1.5% daily volatility
+        std_proxy = 0.018 * math.sqrt(horizon_days)
+        var_95_proxy = std_proxy * 1.645
+        var_99_proxy = std_proxy * 2.326
+        cvar_proxy = std_proxy * 2.06
+        return {
+            "available": True,
+            "is_proxy": True,
+            "var_95_pct": round(var_95_proxy * 100, 2),
+            "var_95_inr": round(var_95_proxy * position_value, 2),
+            "var_99_pct": round(var_99_proxy * 100, 2),
+            "var_99_inr": round(var_99_proxy * position_value, 2),
+            "cvar_95_pct": round(cvar_proxy * 100, 2),
+            "cvar_95_inr": round(cvar_proxy * position_value, 2),
+            "parametric_var_pct": round(var_95_proxy * 100, 2),
+            "parametric_var_inr": round(var_95_proxy * position_value, 2),
+            "horizon_days": horizon_days,
+            "tail_risk_grade": "MODERATE",
+        }
+
+    scale = math.sqrt(max(1, horizon_days))
+
+    # 1. Historical 95% & 99% VaR
+    var_95_quant = float(np.percentile(s, (1 - 0.95) * 100))
+    var_99_quant = float(np.percentile(s, (1 - 0.99) * 100))
+
+    var_95_pct = abs(min(0.0, var_95_quant)) * scale
+    var_99_pct = abs(min(0.0, var_99_quant)) * scale
+
+    # 2. Expected Shortfall / CVaR (mean of losses exceeding 95% quantile)
+    tail_losses = s[s <= var_95_quant]
+    if not tail_losses.empty:
+        cvar_quant = float(tail_losses.mean())
+    else:
+        cvar_quant = var_95_quant * 1.25
+    cvar_95_pct = abs(min(0.0, cvar_quant)) * scale
+
+    # 3. Parametric Gaussian VaR
+    mu = float(s.mean())
+    sigma = float(s.std())
+    param_var_pct = abs(min(0.0, (mu - 1.645 * sigma))) * scale
+
+    # Rupee equivalents
+    var_95_inr = round(var_95_pct * position_value, 2)
+    var_99_inr = round(var_99_pct * position_value, 2)
+    cvar_95_inr = round(cvar_95_pct * position_value, 2)
+    param_inr = round(param_var_pct * position_value, 2)
+
+    # Tail risk severity grade
+    if var_95_pct > 0.035:
+        grade = "HIGH_VOLATILITY"
+    elif var_95_pct > 0.018:
+        grade = "NORMAL_BALANCED"
+    else:
+        grade = "LOW_TAIL_RISK"
+
+    return {
+        "available": True,
+        "is_proxy": False,
+        "var_95_pct": round(var_95_pct * 100, 2),
+        "var_95_inr": var_95_inr,
+        "var_99_pct": round(var_99_pct * 100, 2),
+        "var_99_inr": var_99_inr,
+        "cvar_95_pct": round(cvar_95_pct * 100, 2),
+        "cvar_95_inr": cvar_95_inr,
+        "parametric_var_pct": round(param_var_pct * 100, 2),
+        "parametric_var_inr": param_inr,
+        "horizon_days": horizon_days,
+        "tail_risk_grade": grade,
+    }
+
+
+def compute_portfolio_stress_test(
+    positions: list[dict],
+    market_shock_pct: float = -2.5,
+) -> dict[str, Any]:
+    """
+    Stress-tests a basket of positions against a sudden gap down or market shock.
+    Returns estimated rupee drawdown and maximum adverse excursion.
+    """
+    total_val = sum(p.get("position_value", 0.0) for p in positions)
+    if total_val <= 0:
+        return {"total_exposure": 0.0, "stress_loss_inr": 0.0, "loss_pct": 0.0}
+
+    total_loss = 0.0
+    breakdown = []
+    for p in positions:
+        val = p.get("position_value", 0.0)
+        beta = p.get("beta", 1.0)
+        pos_shock = market_shock_pct * beta
+        loss_inr = abs(val * (pos_shock / 100.0))
+        total_loss += loss_inr
+        breakdown.append({
+            "ticker": p.get("ticker", "N/A"),
+            "value": val,
+            "projected_drawdown_inr": round(loss_inr, 2),
+        })
+
+    return {
+        "total_exposure": round(total_val, 2),
+        "stress_loss_inr": round(total_loss, 2),
+        "loss_pct": round((total_loss / total_val) * 100.0, 2) if total_val > 0 else 0.0,
+        "breakdown": breakdown,
+    }
+

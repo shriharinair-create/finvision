@@ -638,7 +638,52 @@ def render_mode4():
             st.markdown(f"**Anti-Stop-Hunt Buffer:** `₹{anti_buf:.2f}` (Protected)")
             st.caption(f"Dynamic ATR stop adjusted below S1 cluster to evade operator liquidity runs.")
 
+    # ── 🤖 ML ENSEMBLE CONSENSUS & INSTITUTIONAL TAIL-RISK SUITE (VaR / CVaR) ─
+    ml_res = forecast_result.get("ml_ensemble", {})
+    tail_risk = forecast_result.get("tail_risk", {})
+    macro_info = forecast_result.get("macro_environment", {})
+    reg_mode = forecast_result.get("regime_adaptive_mode", "Dynamic")
+
+    st.markdown(
+        f"""
+        <div style="background:#161B22; border:1px solid #30363D; border-radius:10px; padding:14px 18px; margin:14px 0;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; flex-wrap:wrap; gap:8px;">
+            <span style="font-size:13px; font-weight:700; color:#58A6FF; letter-spacing:0.5px;">
+              🤖 MACHINE LEARNING ENSEMBLE & INSTITUTIONAL TAIL-RISK (VaR / CVaR)
+            </span>
+            <span style="font-size:11px; font-weight:800; background:#21262D; color:#58A6FF; padding:2px 8px; border-radius:10px;">
+              ⚖️ {reg_mode}
+            </span>
+          </div>
+          <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:10px;">
+            <div style="background:#0D1117; padding:10px 12px; border-radius:6px; border-left:3px solid #58A6FF;">
+              <div style="font-size:10px; color:#8B949E; text-transform:uppercase;">ML Tree Consensus</div>
+              <div style="font-size:13px; font-weight:800; color:#C9D1D9; margin-top:2px;">{ml_res.get('badge', '🤖 Active')}</div>
+              <div style="font-size:10px; color:#8B949E;">P(Up): {int(ml_res.get('ml_prob_up', 0.5)*100)}% · Conf: {ml_res.get('ml_confidence_pct', 50)}%</div>
+            </div>
+            <div style="background:#0D1117; padding:10px 12px; border-radius:6px; border-left:3px solid #F85149;">
+              <div style="font-size:10px; color:#8B949E; text-transform:uppercase;">1-Day 95% VaR</div>
+              <div style="font-size:14px; font-weight:800; color:#F85149; margin-top:2px;">{tail_risk.get('var_95_pct', 1.8):.2f}% (₹{tail_risk.get('var_95_inr', 0):,.2f})</div>
+              <div style="font-size:10px; color:#8B949E;">99% VaR: {tail_risk.get('var_99_pct', 2.5):.2f}%</div>
+            </div>
+            <div style="background:#0D1117; padding:10px 12px; border-radius:6px; border-left:3px solid #E3B341;">
+              <div style="font-size:10px; color:#8B949E; text-transform:uppercase;">Expected Shortfall (CVaR)</div>
+              <div style="font-size:14px; font-weight:800; color:#E3B341; margin-top:2px;">{tail_risk.get('cvar_95_pct', 2.4):.2f}% (₹{tail_risk.get('cvar_95_inr', 0):,.2f})</div>
+              <div style="font-size:10px; color:#8B949E;">Loss given tail breach</div>
+            </div>
+            <div style="background:#0D1117; padding:10px 12px; border-radius:6px; border-left:3px solid #3FB950;">
+              <div style="font-size:10px; color:#8B949E; text-transform:uppercase;">Macro Headwind Baro</div>
+              <div style="font-size:12px; font-weight:800; color:#C9D1D9; margin-top:2px;">{macro_info.get('macro_badge', '⚪ Neutral')}</div>
+              <div style="font-size:10px; color:#8B949E;">Crude & FX Factor Shift</div>
+            </div>
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
     st.divider()
+
 
     # ── Multi-Day Projected Forecast Table ────────────────────────────────────
     st.markdown(f"### 📈 {forecast_days}-Day Quantitative Multi-Modal Projection")

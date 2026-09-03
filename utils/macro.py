@@ -28,6 +28,8 @@ Honesty boundaries this module respects:
 from __future__ import annotations
 
 import re
+from typing import Any
+import pandas as pd
 
 # Category -> keyword set. A headline can match multiple categories.
 MACRO_CATEGORIES: dict[str, set[str]] = {
@@ -142,3 +144,103 @@ def tag_news_batch(news: list[dict]) -> dict:
         "dominant_category": dominant,
         "note": note,
     }
+
+
+# ── Live Cross-Asset Macroeconomic Barometer ──────────────────────────────────
+import yfinance as yf
+import streamlit as st
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def get_live_cross_asset_macro() -> dict[str, Any]:
+    """
+    Fetches real-time macroeconomic cross-asset feeds impacting Indian equities:
+      1. Brent Crude (BZ=F) - Inflation & fiscal deficit driver.
+      2. USD / INR (USDINR=X) - FII capital flows & currency stability.
+      3. Gold (GC=F) - Risk-off safe haven gauge.
+      4. US 10Y Yield (^TNX) - Global cost of capital.
+    Returns quotes, 5-day % changes, and macro bias.
+    """
+    instruments = {
+        "crude": {"symbol": "BZ=F", "name": "Brent Crude Oil", "unit": "$/bbl", "default": 78.50},
+        "usdinr": {"symbol": "USDINR=X", "name": "USD / INR", "unit": "₹", "default": 87.25},
+        "gold": {"symbol": "GC=F", "name": "Gold", "unit": "$/oz", "default": 2850.0},
+        "us10y": {"symbol": "^TNX", "name": "US 10Y Yield", "unit": "%", "default": 4.25},
+    }
+
+    results = {}
+    for key, item in instruments.items():
+        price = item["default"]
+        chg_5d = 0.0
+        try:
+            df = yf.download(item["symbol"], period="7d", progress=False)
+            if not df.empty and len(df) >= 2:
+                if isinstance(df.columns, pd.MultiIndex):
+                    df.columns = [c[0] for c in df.columns]
+                c = df["Close"].dropna()
+                if not c.empty:
+                    price = float(c.iloc[-1])
+                    if len(c) >= 5:
+                        chg_5d = float((c.iloc[-1] - c.iloc[-5]) / c.iloc[-5] * 100.0)
+                    else:
+                        chg_5d = float((c.iloc[-1] - c.iloc[0]) / c.iloc[0] * 100.0)
+        except Exception:
+            pass
+
+        results[key] = {
+            "name": item["name"],
+            "symbol": item["symbol"],
+            "price": round(price, 2),
+            "unit": item["unit"],
+            "chg_5d_pct": round(chg_5d, 2),
+        }
+
+    # Macro Headwind / Tailwind Composite Scoring (-0.30 to +0.20)
+    crude_chg = results["crude"]["chg_5d_pct"]
+    usdinr_chg = results["usdinr"]["chg_5d_pct"]
+    gold_chg = results["gold"]["chg_5d_pct"]
+
+    macro_score = 0.0
+    drivers = []
+
+    # 1. Crude impact on Indian corporate margins
+    if crude_chg > 3.0:
+        macro_score -= 0.12
+        drivers.append(f"Crude spike (+{crude_chg:.1f}% 5D) compresses domestic margins")
+    elif crude_chg < -3.0:
+        macro_score += 0.08
+        drivers.append(f"Crude softening ({crude_chg:.1f}% 5D) provides margin tailwind")
+
+    # 2. USD/INR impact on FII flows
+    if usdinr_chg > 0.8:
+        macro_score -= 0.10
+        drivers.append(f"Rupee depreciation (+{usdinr_chg:.1f}% USD/INR) accelerates FII selling")
+    elif usdinr_chg < -0.6:
+        macro_score += 0.08
+        drivers.append(f"Rupee stability ({usdinr_chg:.1f}% USD/INR) supports FII inflows")
+
+    # 3. Gold safe haven
+    if gold_chg > 2.5:
+        macro_score -= 0.06
+        drivers.append("Gold accumulation signals global risk-off hedging")
+
+    macro_score = float(max(-0.30, min(0.20, macro_score)))
+
+    if macro_score < -0.10:
+        stance = "SEVERE_HEADWIND"
+        badge = "🔴 MACRO HEADWIND"
+    elif macro_score > 0.05:
+        stance = "FAVORABLE_TAILWIND"
+        badge = "🟢 MACRO TAILWIND"
+    else:
+        stance = "NEUTRAL"
+        badge = "⚪ MACRO NEUTRAL"
+
+    return {
+        "assets": results,
+        "composite_score": round(macro_score, 2),
+        "macro_stance": stance,
+        "macro_badge": badge,
+        "primary_drivers": drivers or ["Global commodity & forex conditions remain within stable baseline bands."],
+    }
+

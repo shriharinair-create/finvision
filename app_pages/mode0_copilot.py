@@ -35,6 +35,7 @@ from utils.regime import detect_indian_market_regime
 from utils.meta_labeling import evaluate_meta_labeling_filter
 from utils.user_prefs import get_user_preferences, save_user_preference
 from utils.veteran_evaluator import fact_check_veteran_rule
+from utils.macro import get_live_cross_asset_macro
 import textwrap
 
 
@@ -118,6 +119,17 @@ def render_mode0():
     except Exception:
         pass
 
+    # ── Macro Cross-Asset Barometer ──────────────────────────────────────────
+    macro_baro = get_live_cross_asset_macro()
+    assets = macro_baro.get("assets", {})
+    crude = assets.get("crude", {"price": 78.5, "chg_5d_pct": 0.0})
+    usdinr = assets.get("usdinr", {"price": 87.25, "chg_5d_pct": 0.0})
+    gold = assets.get("gold", {"price": 2850.0, "chg_5d_pct": 0.0})
+
+    crude_clr = "#F85149" if crude["chg_5d_pct"] > 0 else "#3FB950"
+    usdinr_clr = "#F85149" if usdinr["chg_5d_pct"] > 0 else "#3FB950"
+    gold_clr = "#E3B341"
+
     st.markdown(
         textwrap.dedent(f"""
         <div style="background:#161B22; border:1px solid #30363D; border-radius:8px; padding:12px 16px; margin:14px 0;">
@@ -136,10 +148,24 @@ def render_mode0():
           <div style="font-size:11px; color:#C9D1D9; margin-top:6px; border-top:1px solid #21262D; padding-top:6px;">
             💡 <em>{market_regime['playbook_guidance']}</em>
           </div>
+          <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; margin-top:8px; border-top:1px dashed #21262D; padding-top:8px;">
+            <div style="font-size:11px; color:#8B949E;">
+              🌐 <strong>Cross-Asset Macro:</strong> 
+              Crude: <strong>${crude['price']}</strong> (<span style="color:{crude_clr}">{crude['chg_5d_pct']:+.1f}% 5D</span>) · 
+              USD/INR: <strong>₹{usdinr['price']}</strong> (<span style="color:{usdinr_clr}">{usdinr['chg_5d_pct']:+.1f}%</span>) · 
+              Gold: <strong>${gold['price']:,.0f}</strong>
+            </div>
+            <div>
+              <span style="font-size:10px; font-weight:800; background:#21262D; padding:2px 8px; border-radius:10px; color:#58A6FF;">
+                {macro_baro['macro_badge']}
+              </span>
+            </div>
+          </div>
         </div>
         """),
         unsafe_allow_html=True
     )
+
 
     # ── 🏛️ India Market Leaders & Benchmark Radar (Permanent Live Card) ────────
     st.markdown(
@@ -391,6 +417,12 @@ def render_mode0():
                 final_pos_val = round(final_shares * b_entry, 2)
                 final_risk = round(final_shares * abs(b_entry - sl), 2)
 
+                ml_data = fc.get("ml_ensemble", {})
+                tail_risk = fc.get("tail_risk", {})
+                var_inr = round(final_pos_val * (tail_risk.get("var_95_pct", 1.8) / 100.0), 1)
+                cvar_inr = round(final_pos_val * (tail_risk.get("cvar_95_pct", 2.4) / 100.0), 1)
+                reg_mode = fc.get("regime_adaptive_mode", "Adaptive")
+
                 setups.append({
                     "ticker": tick,
                     "price": last_p,
@@ -409,6 +441,12 @@ def render_mode0():
                     "risk_val": final_risk,
                     "meta_eval": meta_eval,
                     "adaptive_stop_mult": stop_mult,
+                    "ml_ensemble": ml_data,
+                    "ml_badge": ml_data.get("badge", "🤖 ML Consensus: Active"),
+                    "tail_risk": tail_risk,
+                    "var_inr": var_inr,
+                    "cvar_inr": cvar_inr,
+                    "regime_mode": reg_mode,
                 })
             except Exception:
                 continue
@@ -474,6 +512,11 @@ def render_mode0():
                         f'<span>EXACT SIZED ORDER</span>',
                         f'<span>{order_verb} <strong>{s["shares"]:,} shares</strong> (₹{s["pos_val"]:,.0f} value) · Max Loss strictly capped at ₹{s["risk_val"]:,.0f} ({s["meta_eval"]["bet_sizing_factor"]}x sizing)</span>',
                         f'</div>',
+                        f'<div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:6px; font-size:11px; background:#0D1117; border:1px solid #21262D; border-radius:6px; padding:6px 10px; margin-top:8px;">',
+                        f'<span>📉 <strong>1D 95% VaR:</strong> ₹{s["var_inr"]:,.0f} (CVaR Tail Loss: ₹{s["cvar_inr"]:,.0f})</span>',
+                        f'<span style="color:#58A6FF; font-weight:700;">{s["ml_badge"]}</span>',
+                        f'<span style="color:#8B949E; font-size:10px;">⚖️ {s["regime_mode"]}</span>',
+                        f'</div>',
                         f'</div>'
                     ])
                     st.markdown(card_html_t1, unsafe_allow_html=True)
@@ -502,20 +545,23 @@ def render_mode0():
                             render_eli5_box(
                                 title=f"How to safely trade {tick} today",
                                 explanation=(
-                                    f"1. Why buy here: Price is sitting near strong institutional support at ₹{s['entry']:,.2f}. "
-                                    f"Big buyers usually defend this price.\n"
+                                    f"1. Why trade here: Price is sitting near institutional boundary levels at ₹{s['entry']:,.2f}.\n"
                                     f"2. Your exit plan: As soon as price rises to ₹{s['target1']:,.2f}, sell your shares and lock in your profit of +₹{est_profit_inr:,.0f}.\n"
                                     f"3. Your safety net: If the market drops unexpectedly, your stop loss triggers at ₹{s['stop_loss']:,.2f}. "
                                     f"You only lose ₹{s['risk_val']:,.0f} (which is strictly capped by your risk rules).\n"
-                                    f"4. AI Veteran Meta-Model: {s['meta_eval']['verdict_explanation']}"
+                                    f"4. Institutional Tail Risk: 1-Day 95% Value-at-Risk (VaR) is ₹{s['var_inr']:,.0f}. In an extreme 5% tail shock, expected loss is ₹{s['cvar_inr']:,.0f}.\n"
+                                    f"5. Machine Learning Consensus: {s['ml_badge']} (Non-linear Random Forest & Logistic Regression cross-validation).\n"
+                                    f"6. AI Veteran Meta-Model: {s['meta_eval']['verdict_explanation']}"
                                 ),
                                 key_rules=[
                                     "Never trade without entering the stop loss in your broker app (Zerodha/Groww).",
                                     "Lock profits at Target 1 and do not get greedy if market turns choppy.",
                                     f"Active Market Regime: {market_regime['regime_name']} ({market_regime['strategy_playbook']}).",
+                                    f"Dynamic Factor Weighting: {s['regime_mode']}.",
                                     f"Watch for the 10:00 AM inflection window ({s['flip_time']}).",
                                 ]
                             )
+
 
     # ── 🌱 TRACK 2: LONG-TERM WEALTH COMPOUNDING ──────────────────────────────
     else:

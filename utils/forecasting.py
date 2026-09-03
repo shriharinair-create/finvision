@@ -24,6 +24,10 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 import pandas as pd
 
+from utils.ml_ensemble import compute_ml_ensemble_consensus
+from utils.risk import compute_institutional_var_cvar
+from utils.macro import get_live_cross_asset_macro
+
 
 def compute_quantitative_confluence_forecast(
     df: pd.DataFrame,
@@ -217,21 +221,49 @@ def compute_quantitative_confluence_forecast(
     elif rel_strength < -2.0:
         rs_score = -0.40
 
-    regime_score = float(np.clip(mkt_regime_drag + (rs_score * 0.75), -1.0, 1.0))
+    # ── 6. Market Benchmark Regime & Cross-Asset Macro Headwind ─────────────
+    # Fetch real-time macro conditions (Crude, USD/INR, Gold)
+    try:
+        macro_env = get_live_cross_asset_macro()
+        macro_headwind = float(macro_env.get("composite_score", 0.0))
+    except Exception:
+        macro_env = {"macro_badge": "⚪ MACRO NEUTRAL", "composite_score": 0.0, "primary_drivers": []}
+        macro_headwind = 0.0
 
-    # ── 7. Orthogonal 4-Factor Composite Calibration ─────────────────────────
-    # Balanced multi-factor framework using 4 non-overlapping dimensions (25% each):
-    #   1. Structural Trend Hierarchy (25%)
-    #   2. Consolidated Momentum (25%)
-    #   3. Order Flow & Liquidity (25%)
-    #   4. Market Regime & Relative Alpha (25%)
+    regime_score = float(np.clip(mkt_regime_drag + (rs_score * 0.65) + macro_headwind, -1.0, 1.0))
+
+    # ── 7. Dynamic Regime-Adaptive Indicator Weighting Engine ────────────────
+    # Dynamically shifts indicator importance depending on market state:
+    #   A) Strong Trending Bull/Bear Expansion: Trend Structure (38%) and Flow dominate
+    #   B) Choppy / Neutral Consolidation: Mean-reverting Oscillators (36%) and S/R dominate
+    #   C) Bearish Markdown / Crisis: Macro Headwind & Defensive Regime (36%) dominate
     catalyst_intensity = max(abs(news_sentiment_score), abs(catalyst_score))
     if catalyst_intensity >= 0.25:
-        w_news = min(0.40, 0.20 + 0.25 * (catalyst_intensity - 0.20))
-        w_tech = 1.0 - w_news
+        w_news = min(0.35, 0.18 + 0.25 * (catalyst_intensity - 0.20))
+        w_core = 1.0 - w_news
     else:
-        w_news = 0.15
-        w_tech = 0.85
+        w_news = 0.12
+        w_core = 0.88
+
+    # Adaptive Weight Allocation:
+    if regime_score > 0.20:
+        w_trend = w_core * 0.38
+        w_mom = w_core * 0.26
+        w_flow = w_core * 0.20
+        w_regime = w_core * 0.16
+        regime_mode_label = "Trending Expansion"
+    elif regime_score < -0.20:
+        w_trend = w_core * 0.18
+        w_mom = w_core * 0.16
+        w_flow = w_core * 0.30
+        w_regime = w_core * 0.36
+        regime_mode_label = "Bear Correction (Defensive)"
+    else:
+        w_trend = w_core * 0.15
+        w_mom = w_core * 0.36
+        w_flow = w_core * 0.31
+        w_regime = w_core * 0.18
+        regime_mode_label = "Consolidation Range (Mean-Reverting)"
 
     # Short-Squeeze / Oversold Rebound Multiplier
     squeeze_mult = 1.0
@@ -240,12 +272,7 @@ def compute_quantitative_confluence_forecast(
     elif (rsi > 70 or mom_score > 0.4) and (news_sentiment_score < -0.25 or catalyst_score < -0.25):
         squeeze_mult = 1.65
 
-    w_factor = w_tech / 4.0
-
     # Structural Trend & Order Flow Guard against headline euphoria overfit:
-    # If underlying technical trend and order flow are both distinctly negative,
-    # positive headline sentiment represents a counter-trend or 'sell-the-news' impulse,
-    # not a structural breakout. Dampen news weight so it cannot flip bearish reality into strong bullishness.
     is_structural_bear = (trend_score < -0.20 and flow_score < -0.15)
     effective_news_sent = news_sentiment_score
     effective_catalyst = catalyst_score
@@ -254,10 +281,10 @@ def compute_quantitative_confluence_forecast(
         effective_catalyst = min(0.08, catalyst_score * 0.20)
 
     raw_fused = (
-        w_factor * trend_score +
-        w_factor * mom_score +
-        w_factor * flow_score +
-        w_factor * regime_score +
+        w_trend * trend_score +
+        w_mom * mom_score +
+        w_flow * flow_score +
+        w_regime * regime_score +
         (w_news / 2.0) * effective_news_sent * squeeze_mult +
         (w_news / 2.0) * effective_catalyst * squeeze_mult
     )
@@ -269,6 +296,7 @@ def compute_quantitative_confluence_forecast(
     # Exit Liquidity Trap Guard: Prevent retail chasing distribution into euphoria
     exit_trap_data = check_exit_liquidity_trap(df, news_sentiment_score, catalyst_score, rsi)
     if exit_trap_data.get("is_trap"):
+
         raw_fused = float(np.clip(raw_fused - 0.35, -1.0, -0.15))
 
     # --- Anti-Stop-Hunt Liquidity Buffer & Wyckoff Gating ---
@@ -404,14 +432,26 @@ def compute_quantitative_confluence_forecast(
         "delivery_accumulation": delivery_data,
         "anti_hunt_buffer": anti_hunt_buffer,
         "triple_barrier": triple_barrier,
-        "score_components": {
-            "Structural Trend (25%)": round(trend_score, 2),
-            "Consolidated Momentum (25%)": round(mom_score, 2),
-            "Order Flow & Liquidity (25%)": round(flow_score, 2),
-            "Market Regime & Alpha (25%)": round(regime_score, 2),
+        "regime_adaptive_mode": regime_mode_label,
+        "factor_weights": {
+            "trend": round(w_trend, 3),
+            "momentum": round(w_mom, 3),
+            "flow": round(w_flow, 3),
+            "regime": round(w_regime, 3),
+            "news": round(w_news, 3),
         },
+        "score_components": {
+            f"Structural Trend ({int(round(w_trend * 100))}%)": round(trend_score, 2),
+            f"Consolidated Momentum ({int(round(w_mom * 100))}%)": round(mom_score, 2),
+            f"Order Flow & Liquidity ({int(round(w_flow * 100))}%)": round(flow_score, 2),
+            f"Market Regime & Macro ({int(round(w_regime * 100))}%)": round(regime_score, 2),
+        },
+        "ml_ensemble": compute_ml_ensemble_consensus(df, technical_bias=bias_label, nse_df=nse_df),
+        "tail_risk": compute_institutional_var_cvar(daily_returns, position_value=last_p, confidence_level=0.95, horizon_days=1),
+        "macro_environment": macro_env,
         "projections": projections
     }
+
 
 
 def run_monte_carlo(df: pd.DataFrame, days: int = 5, simulations: int = 120) -> pd.DataFrame:
