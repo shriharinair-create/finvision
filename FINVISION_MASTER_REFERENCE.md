@@ -131,3 +131,13 @@ Copy-Item "g:\AI\Stock\Stock_Claude\finvision_bkp\android_client\app\build\outpu
 adb -s 3C166K010Q800000 push "G:\AI\FinVision_APKs\FinVision.apk" /data/local/tmp/FinVision.apk
 adb -s 3C166K010Q800000 shell pm install -r -t --user 0 /data/local/tmp/FinVision.apk
 ```
+
+---
+
+## 🔍 8. Key Known Resolutions & Diagnostics
+
+1. **`torchvision` in Cloud Deployment**: Must be explicitly declared in `requirements.txt` alongside `torch` and `transformers` to prevent import failures in Streamlit Cloud Linux containers.
+2. **HTML Markup in `st.markdown`**: CommonMark interprets lines with 4+ leading spaces as `<pre><code>` code blocks. All multiline HTML strings passed to `st.markdown(..., unsafe_allow_html=True)` must be wrapped in `textwrap.dedent(...)`.
+3. **Android Client Default Launch**: Configured in `MainActivity.java` to default to `BuildConfig.DEFAULT_CLOUD_URL` so mobile users immediately receive the full, real-time Python Streamlit terminal instead of the offline HTML fallback.
+4. **Dalal Street Veteran Wisdom Input**: Accessible both in **Mode 0 (Smart Copilot)** via the dedicated expander and **Mode 6 (AI Academy Tab 3)**, running 2-year empirical walk-forward backtests.
+
