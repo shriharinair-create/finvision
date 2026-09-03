@@ -1,0 +1,272 @@
+"""
+finvision/app_pages/mode6_academy.py
+====================================
+AI Trading Academy & Paper Trading Simulator Journal.
+Teaches zero-knowledge beginners the ropes of smart trading, risk management,
+and compounding, while providing a risk-free simulator with live P&L analytics.
+"""
+
+from __future__ import annotations
+
+import datetime
+from typing import Any, Dict, List
+import pandas as pd
+import streamlit as st
+
+from utils.market_store import (
+    get_all_paper_trades,
+    close_paper_trade,
+    get_paper_trading_summary,
+    log_paper_trade,
+)
+from utils.components import render_eli5_box, esc
+
+
+ACADEMY_LESSONS = [
+    {
+        "id": 1,
+        "title": "🎯 Lesson 1: The 2:1 Golden Rule — How to Profit Winning Only 40% of Trades",
+        "category": "Risk Management",
+        "body": (
+            "Most beginners think you need a 90% win rate to get rich. In reality, institutional traders aim for asymmetric Risk-to-Reward (R:R).\n\n"
+            "If your target gain is ₹2,000 and your maximum loss is strictly capped at ₹1,000 (a 2:1 ratio):\n"
+            "• Out of 10 trades, if you LOSE 6 trades: -₹6,000 loss.\n"
+            "• If you WIN just 4 trades: +₹8,000 profit.\n"
+            "• **Net Result:** You make **+₹2,000 net profit** even though you lost more than half the time!\n\n"
+            "FinVision automatically calculates your R:R on every single setup so you never take unfavorable trades."
+        ),
+        "rule": "Never enter any trade with an R:R of less than 1.5:1."
+    },
+    {
+        "id": 2,
+        "title": "🛡️ Lesson 2: The Stop-Loss — Your Irreplaceable Capital Insurance",
+        "category": "Capital Preservation",
+        "body": (
+            "A Stop Loss is not an admission of defeat; it is the price of doing business in financial markets.\n\n"
+            "When you enter a trade, you are buying a probability, not a certainty. If the market drops unexpectedly, "
+            "a predefined stop-loss sells your shares automatically before a 1% loss turns into a disastrous 20% loss that paralyzes your account.\n\n"
+            "Always enter your Stop Loss immediately upon buying in your broker app (Zerodha, Groww, AngelOne)."
+        ),
+        "rule": "Never cancel or widen a stop loss once entered."
+    },
+    {
+        "id": 3,
+        "title": "🌱 Lesson 3: The 8th Wonder of the World — How ₹10k/Month Becomes ₹1 Crore",
+        "category": "Wealth Compounding",
+        "body": (
+            "Albert Einstein called compound interest the eighth wonder of the world. "
+            "When you invest in high-quality businesses with wide economic moats (like Reliance, TCS, Titan, HDFC Bank):\n\n"
+            "• Investing ₹10,000/month at 16% CAGR grows to:\n"
+            "  - In 5 Years: **₹9.3 Lakhs**\n"
+            "  - In 10 Years: **₹30.5 Lakhs**\n"
+            "  - In 15 Years: **₹82.8 Lakhs**\n"
+            "  - In 17 Years: **₹1.15 Crore!**\n\n"
+            "Notice how the wealth creation accelerates dramatically in the later years. Time in the market beats timing the market."
+        ),
+        "rule": "Automate your monthly SIP and never stop investing during market corrections."
+    },
+    {
+        "id": 4,
+        "title": "⚡ Lesson 4: The 10:00 AM Session Flip — Why Timing Beats Speed",
+        "category": "Intraday Dynamics",
+        "body": (
+            "The Indian Stock Market (NSE) opens at 09:15 AM. During the first 15 minutes, overnight retail orders flood the market, "
+            "causing wild erratic swings (price discovery).\n\n"
+            "Between 09:30 AM and 10:00 AM, dominant momentum takes control (Phase 2 Impulse).\n\n"
+            "Around 10:00 AM to 10:15 AM, early scalpers lock their profits, which often causes a sudden mean-reversion pullback (Session Flip).\n\n"
+            "FinVision's Intraday Blueprint calculates this flip window so you can book profits before the market pulls back!"
+        ),
+        "rule": "Never chase the 09:15 AM market open. Wait for the 15-minute Opening Range Breakout (ORB)."
+    },
+    {
+        "id": 5,
+        "title": "🧠 Lesson 5: News Sentiment vs Technical Confluence",
+        "category": "Multi-Modal Intelligence",
+        "body": (
+            "A technical breakout with NO news support can fail easily. Similarly, good news on a stock already trading below its 200-day moving average "
+            "often gets sold off by big institutions looking for exit liquidity.\n\n"
+            "The highest-probability trades occur when **Technical Alignment** (Price > EMA20 > EMA50) meets **Positive Sentiment Tailwind** (FinBERT score > +0.20). "
+            "This is called Multi-Modal Confluence."
+        ),
+        "rule": "Only deploy large size when both technicals and news catalysts point in the same direction."
+    },
+    {
+        "id": 6,
+        "title": "🧘 Lesson 6: Emotional Discipline & Position Sizing",
+        "category": "Trader Psychology",
+        "body": (
+            "Why do 90% of retail traders lose money? Because they risk too much per trade, panic during minor dips, and revenge-trade after a loss.\n\n"
+            "If you risk only 1% of your capital on each trade, you can lose 10 trades in a row and still have 90% of your capital safe and sound!\n\n"
+            "FinVision's Position Sizer automatically does the math for your budget so you never feel stressed."
+        ),
+        "rule": "If you feel anxious about an open trade, your position size is too large."
+    },
+]
+
+
+def render_mode6():
+    st.markdown("## 🎓 AI Trading Academy & Paper Trading Journal")
+    st.caption("Learn the institutional ropes of smart risk management, explore micro-lessons, and test strategies risk-free in your simulated portfolio.")
+
+    tab_journal, tab_academy, tab_glossary = st.tabs([
+        "📓 Live Paper Trading Portfolio",
+        "🎓 AI Trading Academy & Lessons",
+        "📖 Financial Jargon Translator",
+    ])
+
+    # ── TAB 1: PAPER TRADING SIMULATOR & JOURNAL ──────────────────────────────
+    with tab_journal:
+        st.markdown("### 📓 Live Paper Trading Simulator & Performance Journal")
+        st.caption("Test setups risk-free. All trades are persisted in your local SQLite database with live win-rate and realized P&L analytics.")
+
+        summary = get_paper_trading_summary()
+        all_trades = get_all_paper_trades()
+
+        s1, s2, s3, s4, s5 = st.columns(5)
+        s1.metric("Total Simulated Trades", summary["total_trades"])
+        s2.metric("Win Rate %", f"{summary['win_rate_pct']:.1f}%", f"{summary['winning_trades']}W / {summary['losing_trades']}L")
+        
+        pnl_val = summary["total_realized_pnl"]
+        s3.metric("Realized P&L (₹)", f"{'+' if pnl_val >= 0 else ''}₹{pnl_val:,.2f}", f"{'+' if pnl_val >= 0 else ''}{pnl_val:.1f}")
+        s4.metric("Profit Factor", f"{summary['profit_factor']:.2f}×", help="Ratio of gross profits to gross losses")
+        s5.metric("Open Active Positions", summary["open_trades"])
+
+        st.divider()
+
+        # Quick Manual Trade Logger
+        with st.expander("➕ Log a New Simulated Paper Trade"):
+            with st.form("manual_paper_trade_form"):
+                fc1, fc2, fc3, fc4 = st.columns(4)
+                with fc1:
+                    pt_tick = st.text_input("Ticker", value="RELIANCE.NS").strip().upper()
+                with fc2:
+                    pt_type = st.selectbox("Type", ["BUY_INTRADAY", "BUY_LONGTERM", "SHORT"])
+                with fc3:
+                    pt_entry = st.number_input("Entry Price (₹)", min_value=1.0, value=2500.0, step=10.0)
+                with fc4:
+                    pt_shares = st.number_input("Shares", min_value=1, value=20, step=1)
+
+                lc1, lc2, lc3 = st.columns(3)
+                with lc1:
+                    pt_target = st.number_input("Target Price (₹)", min_value=1.0, value=2550.0, step=10.0)
+                with lc2:
+                    pt_stop = st.number_input("Stop Loss (₹)", min_value=1.0, value=2475.0, step=10.0)
+                with lc3:
+                    pt_notes = st.text_input("Notes / Strategy", value="Breakout long test")
+
+                submit_trade = st.form_submit_button("🚀 Submit Paper Trade", use_container_width=True)
+                if submit_trade:
+                    tid = log_paper_trade(pt_tick, pt_type, pt_entry, pt_target, pt_stop, pt_shares, pt_notes)
+                    st.success(f"Paper Trade #{tid} recorded successfully!")
+                    st.rerun()
+
+        # Open Positions Actions
+        open_positions = [t for t in all_trades if t["status"] == "OPEN"]
+        if open_positions:
+            st.markdown("#### ⚡ Active Open Positions")
+            for op in open_positions:
+                tid = op["id"]
+                tick = op["ticker"]
+                entry = op["entry_price"]
+                tgt = op["target_price"]
+                sl = op["stop_loss_price"]
+                sh = op["shares"]
+                val = op["position_value"]
+
+                with st.container():
+                    c_info, c_hit_tgt, c_hit_sl, c_man = st.columns([4, 2, 2, 2])
+                    with c_info:
+                        st.markdown(
+                            f"<strong>#{tid} · {tick}</strong> ({op['trade_type']}) · <strong>{sh} shares</strong> @ ₹{entry:,.2f} (₹{val:,.0f}) | "
+                            f"<span style='color:#58A6FF;'>Target: ₹{tgt:,.2f}</span> | <span style='color:#F85149;'>Stop: ₹{sl:,.2f}</span>",
+                            unsafe_allow_html=True
+                        )
+                    with c_hit_tgt:
+                        if st.button(f"🎯 Target Hit", key=f"btn_tgt_{tid}", use_container_width=True):
+                            close_paper_trade(tid, tgt, "TARGET_HIT")
+                            st.toast(f"Trade #{tid} closed at Target ₹{tgt:,.2f}!", icon="🎯")
+                            st.rerun()
+                    with c_hit_sl:
+                        if st.button(f"🛑 Stop Hit", key=f"btn_sl_{tid}", use_container_width=True):
+                            close_paper_trade(tid, sl, "STOP_HIT")
+                            st.toast(f"Trade #{tid} stopped at ₹{sl:,.2f}", icon="🛑")
+                            st.rerun()
+                    with c_man:
+                        if st.button(f"✖ Close Market", key=f"btn_close_{tid}", use_container_width=True):
+                            close_paper_trade(tid, entry, "MANUAL_EXIT")
+                            st.toast(f"Trade #{tid} exited at market.", icon="✖")
+                            st.rerun()
+            st.divider()
+
+        # History Table
+        st.markdown("#### 📜 Trade History Journal")
+        if not all_trades:
+            st.info("No paper trades logged yet. Click 'Paper Trade' from the Smart Copilot or Market Scanner!")
+        else:
+            df_trades = pd.DataFrame([
+                {
+                    "ID": f"#{t['id']}",
+                    "Date": t["timestamp"],
+                    "Ticker": t["ticker"],
+                    "Type": t["trade_type"],
+                    "Shares": t["shares"],
+                    "Entry": f"₹{t['entry_price']:,.2f}",
+                    "Target": f"₹{t['target_price']:,.2f}",
+                    "Stop": f"₹{t['stop_loss_price']:,.2f}",
+                    "Status": t["status"],
+                    "Exit Price": f"₹{t['exit_price']:,.2f}" if t["exit_price"] else "—",
+                    "P&L (₹)": f"{'+' if (t['pnl_amount'] or 0) >= 0 else ''}₹{(t['pnl_amount'] or 0):,.2f}",
+                    "P&L %": f"{'+' if (t['pnl_pct'] or 0) >= 0 else ''}{(t['pnl_pct'] or 0):.2f}%",
+                    "Notes": t["notes"] or "",
+                }
+                for t in all_trades
+            ])
+            st.dataframe(df_trades, use_container_width=True, hide_index=True)
+
+    # ── TAB 2: AI TRADING ACADEMY & LESSONS ────────────────────────────────────
+    with tab_academy:
+        st.markdown("### 🎓 FinVision Institutional Trading & Investing Academy")
+        st.caption("Bite-sized institutional trading wisdom to turn zero-knowledge beginners into disciplined, consistently profitable operators.")
+
+        for lesson in ACADEMY_LESSONS:
+            with st.container():
+                st.markdown(
+                    f"""
+                    <div class="academy-card">
+                        <div class="academy-lesson-num">{esc(lesson['category'])}</div>
+                        <div class="academy-lesson-title">{esc(lesson['title'])}</div>
+                        <div class="academy-lesson-desc" style="white-space: pre-line;">{esc(lesson['body'])}</div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+                render_eli5_box(
+                    title=f"Core Takeaway: {lesson['category']}",
+                    explanation=lesson['rule'],
+                    key_rules=["Review this rule before placing any real money order in your broker."]
+                )
+
+    # ── TAB 3: FINANCIAL JARGON TRANSLATOR ────────────────────────────────────
+    with tab_glossary:
+        st.markdown("### 📖 Plain-English Financial Jargon Translator")
+        st.caption("Never feel confused by complex Wall Street & Dalal Street terminology again.")
+
+        glossary = [
+            ("LTP (Last Traded Price)", "The latest price at which a buyer and seller agreed to exchange a share."),
+            ("Stop Loss (SL)", "An automatic safety exit price that sells your shares if the trade drops, strictly capping your maximum loss."),
+            ("Target (Take-Profit)", "The planned price level where you sell your shares to lock in your profits."),
+            ("Risk-to-Reward (R:R)", "The ratio of potential profit to potential loss. A 2:1 R:R means you aim to make ₹2,000 for every ₹1,000 you risk."),
+            ("ORB (Opening Range Breakout)", "Trading the breakout above or below the highest/lowest price set in the first 15 minutes of market open."),
+            ("Moat", "A company's sustainable competitive advantage (brand power, patents, network effects) that protects it from competitors."),
+            ("CAGR (Compound Annual Growth Rate)", "The annualized rate of return at which an investment compounds over multi-year periods."),
+            ("SIP (Systematic Investment Plan)", "Investing a fixed sum of money automatically on a monthly schedule, averaging out market fluctuations."),
+            ("P/E Ratio (Price-to-Earnings)", "How many rupees investors are willing to pay for every ₹1 of profit the company generates."),
+            ("ROE (Return on Equity)", "How efficiently the company's management converts shareholder capital into pure net profit (>15% is excellent)."),
+            ("VWAP (Volume-Weighted Average Price)", "The true average benchmark price paid by institutional hedge funds and mutual funds throughout the day."),
+        ]
+
+        search_term = st.text_input("🔍 Search Jargon or Term", placeholder="e.g. Stop Loss, Moat, VWAP...")
+        for term, meaning in glossary:
+            if not search_term or search_term.lower() in term.lower() or search_term.lower() in meaning.lower():
+                with st.expander(f"📚 {term}"):
+                    st.write(meaning)

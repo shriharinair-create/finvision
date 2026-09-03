@@ -1,0 +1,12 @@
+streamlit
+yfinance
+plotly
+pandas
+numpy
+requests
+ta
+chromadb
+sentence-transformers
+transformers
+torch
+feedparser
