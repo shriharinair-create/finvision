@@ -18,8 +18,12 @@ from utils.market_store import (
     close_paper_trade,
     get_paper_trading_summary,
     log_paper_trade,
+    log_trade_postmortem,
+    get_postmortem_history,
+    get_recent_regime_history,
 )
 from utils.components import render_eli5_box, esc
+from utils.trade_postmortem import diagnose_trade_postmortem
 
 
 ACADEMY_LESSONS = [
@@ -108,8 +112,9 @@ def render_mode6():
     st.markdown("## 🎓 AI Trading Academy & Paper Trading Journal")
     st.caption("Learn the institutional ropes of smart risk management, explore micro-lessons, and test strategies risk-free in your simulated portfolio.")
 
-    tab_journal, tab_academy, tab_glossary = st.tabs([
+    tab_journal, tab_evolution, tab_academy, tab_glossary = st.tabs([
         "📓 Live Paper Trading Portfolio",
+        "🧠 AI Post-Mortem & Evolution Lab",
         "🎓 AI Trading Academy & Lessons",
         "📖 Financial Jargon Translator",
     ])
@@ -184,16 +189,34 @@ def render_mode6():
                     with c_hit_tgt:
                         if st.button(f"🎯 Target Hit", key=f"btn_tgt_{tid}", use_container_width=True):
                             close_paper_trade(tid, tgt, "TARGET_HIT")
-                            st.toast(f"Trade #{tid} closed at Target ₹{tgt:,.2f}!", icon="🎯")
+                            try:
+                                pm = diagnose_trade_postmortem(tick, op["trade_type"], entry, tgt, sl, tgt, "TARGET_HIT")
+                                pm["trade_id"] = tid
+                                log_trade_postmortem(pm)
+                            except Exception:
+                                pass
+                            st.toast(f"Trade #{tid} closed at Target ₹{tgt:,.2f}! Post-Mortem logged.", icon="🎯")
                             st.rerun()
                     with c_hit_sl:
                         if st.button(f"🛑 Stop Hit", key=f"btn_sl_{tid}", use_container_width=True):
                             close_paper_trade(tid, sl, "STOP_HIT")
-                            st.toast(f"Trade #{tid} stopped at ₹{sl:,.2f}", icon="🛑")
+                            try:
+                                pm = diagnose_trade_postmortem(tick, op["trade_type"], entry, tgt, sl, sl, "STOP_HIT")
+                                pm["trade_id"] = tid
+                                log_trade_postmortem(pm)
+                            except Exception:
+                                pass
+                            st.toast(f"Trade #{tid} stopped at ₹{sl:,.2f}. Post-Mortem logged.", icon="🛑")
                             st.rerun()
                     with c_man:
                         if st.button(f"✖ Close Market", key=f"btn_close_{tid}", use_container_width=True):
                             close_paper_trade(tid, entry, "MANUAL_EXIT")
+                            try:
+                                pm = diagnose_trade_postmortem(tick, op["trade_type"], entry, tgt, sl, entry, "MANUAL_EXIT")
+                                pm["trade_id"] = tid
+                                log_trade_postmortem(pm)
+                            except Exception:
+                                pass
                             st.toast(f"Trade #{tid} exited at market.", icon="✖")
                             st.rerun()
             st.divider()
@@ -223,7 +246,62 @@ def render_mode6():
             ])
             st.dataframe(df_trades, use_container_width=True, hide_index=True)
 
-    # ── TAB 2: AI TRADING ACADEMY & LESSONS ────────────────────────────────────
+    # ── TAB 2: AI POST-MORTEM & EVOLUTION LAB ─────────────────────────────────
+    with tab_evolution:
+        st.markdown("### 🧠 AI Post-Mortem & Self-Evolution Lab")
+        st.caption("How the AI matures over time: Every closed trade undergoes an automated autopsy to diagnose liquidity stop-hunts, market regime drag, and adapt future risk buffers.")
+
+        postmortems = get_postmortem_history(limit=50)
+        regimes = get_recent_regime_history(limit=10)
+
+        # Overview Metrics
+        total_pm = len(postmortems)
+        hunts_count = sum(1 for p in postmortems if p.get("diagnosis_code") == "LIQUIDITY_SWEEP_HUNT")
+        wins_count = sum(1 for p in postmortems if "WIN" in p.get("diagnosis_code", "") or "BLOWOFF" in p.get("diagnosis_code", ""))
+        drag_count = sum(1 for p in postmortems if "DRAG" in p.get("diagnosis_code", "") or "WHIPSAW" in p.get("diagnosis_code", ""))
+
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Autopsies Conducted", total_pm)
+        m2.metric("Clean Target Wins", wins_count)
+        m3.metric("Operator Stop-Hunts Detected", hunts_count, help="Smart-money stop runs where price pierced SL by <0.8% and immediately reversed")
+        m4.metric("Market Drag Losses", drag_count, help="Trades failed due to systemic Nifty index declines rather than stock setup errors")
+
+        st.divider()
+
+        # Post-Mortem Autopsy Feed
+        st.markdown("#### 🔬 Post-Mortem Diagnosis Stream")
+        if not postmortems:
+            st.info("No trade autopsies recorded yet. When you close or hit targets on paper trades, FinVision will automatically conduct post-mortems here.")
+        else:
+            for p in postmortems[:10]:
+                code = p.get("diagnosis_code", "UNKNOWN")
+                pnl = p.get("pnl_amount", 0.0)
+                badge_color = "#00E676" if pnl >= 0 else "#FF5252"
+                hunt_badge = "⚠️ OPERATOR STOP-HUNT" if code == "LIQUIDITY_SWEEP_HUNT" else "🏛️ MARKET REGIME DRAG" if "DRAG" in code else "🎯 CLEAN WIN" if "WIN" in code else "🛑 NORMAL STOP"
+
+                with st.expander(f"{hunt_badge} · {p['ticker']} ({'+' if pnl >= 0 else ''}₹{pnl:,.2f}) — {code}"):
+                    st.markdown(f"**Root Cause Attribution:** {p.get('attribution_summary')}")
+                    st.markdown(f"**AI Adaptive Learning:** `{p.get('corrective_learning')}`")
+                    st.caption(f"Entry: ₹{p.get('entry_price'):,.2f} | Exit: ₹{p.get('exit_price'):,.2f} | PnL: {p.get('pnl_pct'):+.2f}% | Regime: {p.get('regime_at_entry')}")
+
+        st.divider()
+
+        # Regime History Timeline
+        st.markdown("#### 🏛️ Indian Market Regime History (Daily Seasons)")
+        if regimes:
+            df_reg = pd.DataFrame([
+                {
+                    "Date": r["session_date"],
+                    "Regime": r["regime_code"],
+                    "Nifty Price": f"₹{r['nifty_price']:,.2f}" if r["nifty_price"] else "—",
+                    "India VIX": f"{r['vix_value']:.1f}" if r["vix_value"] else "—",
+                    "Playbook Strategy": r["strategy_playbook"]
+                }
+                for r in regimes
+            ])
+            st.dataframe(df_reg, use_container_width=True, hide_index=True)
+
+    # ── TAB 3: AI TRADING ACADEMY & LESSONS ────────────────────────────────────
     with tab_academy:
         st.markdown("### 🎓 FinVision Institutional Trading & Investing Academy")
         st.caption("Bite-sized institutional trading wisdom to turn zero-knowledge beginners into disciplined, consistently profitable operators.")

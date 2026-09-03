@@ -25,8 +25,10 @@ from utils.fundamental_wealth import (
     BLUE_CHIP_COMPOUNDERS,
 )
 from utils.risk import compute_position_size
-from utils.market_store import log_paper_trade
+from utils.market_store import log_paper_trade, log_regime_snapshot, get_stock_adaptive_buffer
 from utils.components import render_eli5_box, esc
+from utils.regime import detect_indian_market_regime
+from utils.meta_labeling import evaluate_meta_labeling_filter
 
 
 RECOMMENDED_DAY_TICKERS = [
@@ -49,6 +51,36 @@ def render_mode0():
         </div>
         """,
         unsafe_allow_html=True,
+    )
+
+    # ── AI Market Season & Regime Radar ──────────────────────────────────────
+    market_regime = detect_indian_market_regime()
+    try:
+        log_regime_snapshot(market_regime)
+    except Exception:
+        pass
+
+    st.markdown(
+        f"""
+        <div style="background:#161B22; border:1px solid #30363D; border-radius:8px; padding:12px 16px; margin:14px 0;">
+          <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+            <div>
+              <span style="font-size:11px; color:#8B949E; font-weight:700;">🏛️ CURRENT INDIAN MARKET REGIME</span>
+              <div style="font-size:16px; font-weight:800; color:{market_regime['badge_color']};">
+                {market_regime['regime_name']}
+              </div>
+            </div>
+            <div style="text-align:right;">
+              <span style="font-size:11px; color:#8B949E;">India VIX: <strong>{market_regime['vix_value']}</strong> | Nifty vs EMA20: <strong>{market_regime['nifty_pct_ema20']:+.1f}%</strong></span>
+              <div style="font-size:12px; font-weight:700; color:#58A6FF;">Playbook: {market_regime['strategy_playbook']}</div>
+            </div>
+          </div>
+          <div style="font-size:11px; color:#C9D1D9; margin-top:6px; border-top:1px solid #21262D; padding-top:6px;">
+            💡 <em>{market_regime['playbook_guidance']}</em>
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True
     )
 
     # ── Persona & Track Selector ──────────────────────────────────────────────
@@ -149,6 +181,29 @@ def render_mode0():
                 flip = bp.get("flip_time_est", "10:00 AM")
                 conv = fc.get("conviction_pct", 65.0)
 
+                # Adaptive Post-Mortem Stop Buffer
+                adaptive_buf = get_stock_adaptive_buffer(tick)
+                stop_mult = adaptive_buf.get("current_stop_multiplier", 1.0)
+                if stop_mult > 1.0:
+                    sl = round(b_entry - abs(b_entry - sl) * stop_mult, 2)
+
+                delivery_accum = fc.get("delivery_accumulation", {}).get("is_accumulation", False)
+                exit_trap = fc.get("exit_liquidity_trap", {}).get("is_trap", False)
+
+                meta_eval = evaluate_meta_labeling_filter(
+                    ticker=tick,
+                    action=act,
+                    entry_price=b_entry,
+                    stop_loss=sl,
+                    target_price=t1,
+                    conviction_pct=conv,
+                    rsi=fc.get("rsi", 50.0),
+                    regime_code=market_regime.get("regime_code", "BULL_MARKUP"),
+                    vix_val=market_regime.get("vix_value", 14.5),
+                    delivery_accum=delivery_accum,
+                    exit_trap=exit_trap
+                )
+
                 # Profit % and Risk:Reward
                 profit_pct = round(((t1 - b_entry) / max(0.01, b_entry)) * 100.0, 2)
                 risk_dist = max(0.01, abs(b_entry - sl))
@@ -156,6 +211,11 @@ def render_mode0():
                 rr = round(reward_dist / risk_dist, 2)
 
                 sizing = compute_position_size(user_budget, risk_pct, b_entry, sl)
+                raw_shares = sizing.get("shares", 0)
+                bet_mult = meta_eval.get("bet_sizing_factor", 1.0)
+                final_shares = max(1 if raw_shares > 0 and bet_mult > 0 else 0, int(raw_shares * bet_mult))
+                final_pos_val = round(final_shares * b_entry, 2)
+                final_risk = round(final_shares * abs(b_entry - sl), 2)
 
                 setups.append({
                     "ticker": tick,
@@ -170,9 +230,11 @@ def render_mode0():
                     "conviction": conv,
                     "profit_pct": profit_pct,
                     "rr_ratio": rr,
-                    "shares": sizing.get("shares", 0),
-                    "pos_val": sizing.get("position_value", 0.0),
-                    "risk_val": sizing.get("cash_at_risk", 0.0),
+                    "shares": final_shares,
+                    "pos_val": final_pos_val,
+                    "risk_val": final_risk,
+                    "meta_eval": meta_eval,
+                    "adaptive_stop_mult": stop_mult,
                 })
             except Exception:
                 continue
@@ -198,17 +260,13 @@ def render_mode0():
                                     <div class="top10-sector">Reference Price: <strong>₹{s['price']:,.2f}</strong></div>
                                 </div>
                                 <div style="text-align:right;">
-                                    <div style="font-family:var(--mono);font-size:18px;font-weight:700;color:#3FB950;">
-                                        +₹{est_profit_inr:,.0f} Expected Gain
-                                    </div>
-                                    <div style="font-size:11px;color:var(--text-muted);font-family:var(--mono);">
-                                        Target: +{s['profit_pct']:.1f}% · R:R: {s['rr_ratio']}×
-                                    </div>
                                 </div>
                             </div>
                             <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px;">
                                 <span class="tactical-badge tactical-badge-action">⚡ {esc(s['action'])}</span>
                                 <span class="tactical-badge tactical-badge-up">{esc(s['bias'])}</span>
+                                <span style="background:{s['meta_eval']['badge_color']}22;color:{s['meta_eval']['badge_color']};border:1px solid {s['meta_eval']['badge_color']}44;padding:2px 8px;border-radius:12px;font-size:11px;font-weight:700;">{s['meta_eval']['status_badge']}</span>
+                                {f'<span style="background:#A371F722;color:#A371F7;border:1px solid #A371F744;padding:2px 8px;border-radius:12px;font-size:10px;font-weight:700;">🛡️ Anti-Sweep Stop ({s[\"adaptive_stop_mult\"]}x ATR)</span>' if s['adaptive_stop_mult'] > 1.0 else ''}
                                 <span style="font-size:11px;color:var(--amber);font-family:var(--mono);">Expected Inflection @ {esc(s['flip_time'])}</span>
                             </div>
                             <div class="top10-grid-levels">
@@ -221,17 +279,13 @@ def render_mode0():
                                     <span class="level-val val-target">₹{s['target1']:,.2f}</span>
                                 </div>
                                 <div class="level-item">
-                                    <span class="level-label">3. Emergency Stop Loss</span>
+                                    <span class="level-label">3. Stop Loss</span>
                                     <span class="level-val val-stop">₹{s['stop_loss']:,.2f}</span>
                                 </div>
-                                <div class="level-item">
-                                    <span class="level-label">4. Runner Target</span>
-                                    <span class="level-val val-profit">₹{s['target2']:,.2f}</span>
-                                </div>
                             </div>
-                            <div class="top10-sizing">
+                            <div class="top10-sizing-strip">
                                 <span>EXACT SIZED ORDER</span>
-                                <span>Buy <strong>{s['shares']:,} shares</strong> (₹{s['pos_val']:,.0f} value) · Max Loss strictly capped at ₹{s['risk_val']:,.0f}</span>
+                                <span>Buy <strong>{s['shares']:,} shares</strong> (₹{s['pos_val']:,.0f} value) · Max Loss strictly capped at ₹{s['risk_val']:,.0f} ({s['meta_eval']['bet_sizing_factor']}x sizing)</span>
                             </div>
                         </div>
                         """,
@@ -249,7 +303,7 @@ def render_mode0():
                                 target_price=s["target1"],
                                 stop_loss_price=s["stop_loss"],
                                 shares=s["shares"],
-                                notes=f"Copilot Setup #{s_idx}: {s['action']}",
+                                notes=f"Copilot Setup #{s_idx}: {s['action']} | Meta: {s['meta_eval']['status_badge']}",
                             )
                             st.toast(f"✅ Paper Trade #{trade_id} logged for {tick} ({s['shares']} shares)!", icon="📓")
                     with col_act2:
@@ -266,11 +320,13 @@ def render_mode0():
                                     f"Big buyers usually defend this price.\n"
                                     f"2. Your exit plan: As soon as price rises to ₹{s['target1']:,.2f}, sell your shares and lock in your profit of +₹{est_profit_inr:,.0f}.\n"
                                     f"3. Your safety net: If the market drops unexpectedly, your stop loss triggers at ₹{s['stop_loss']:,.2f}. "
-                                    f"You only lose ₹{s['risk_val']:,.0f} (which is just {risk_pct*100:.1f}% of your budget)."
+                                    f"You only lose ₹{s['risk_val']:,.0f} (which is strictly capped by your risk rules).\n"
+                                    f"4. AI Veteran Meta-Model: {s['meta_eval']['verdict_explanation']}"
                                 ),
                                 key_rules=[
                                     "Never trade without entering the stop loss in your broker app (Zerodha/Groww).",
                                     "Lock profits at Target 1 and do not get greedy if market turns choppy.",
+                                    f"Active Market Regime: {market_regime['regime_name']} ({market_regime['strategy_playbook']}).",
                                     f"Watch for the 10:00 AM inflection window ({s['flip_time']}).",
                                 ]
                             )

@@ -127,8 +127,53 @@ def init_db() -> None:
                 actual_return_pct REAL,
                 error_pct REAL,
                 is_within_ci INTEGER,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(ticker, session_date, time_slot) ON CONFLICT REPLACE
+            )
+        """)
+
+        # 6. Trade Post-Mortem & Attribution Log
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS trade_postmortems (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                trade_id INTEGER,
+                ticker TEXT NOT NULL,
+                trade_type TEXT NOT NULL,
+                status TEXT NOT NULL,
+                entry_price REAL NOT NULL,
+                exit_price REAL NOT NULL,
+                pnl_amount REAL NOT NULL,
+                pnl_pct REAL NOT NULL,
+                diagnosis_code TEXT NOT NULL,
+                attribution_summary TEXT,
+                corrective_learning TEXT,
+                stock_buffer_multiplier REAL DEFAULT 1.0,
+                regime_at_entry TEXT DEFAULT 'NORMAL',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # 7. Adaptive Stock Risk Buffer Registry
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS adaptive_stock_buffers (
+                ticker TEXT PRIMARY KEY,
+                current_stop_multiplier REAL DEFAULT 1.0,
+                target_multiplier REAL DEFAULT 1.0,
+                liquidity_hunts_count INTEGER DEFAULT 0,
+                clean_wins_count INTEGER DEFAULT 0,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # 8. Indian Market Regime History
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS regime_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_date TEXT NOT NULL UNIQUE,
+                regime_code TEXT NOT NULL,
+                nifty_price REAL,
+                vix_value REAL,
+                strategy_playbook TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
         conn.commit()
@@ -450,4 +495,117 @@ def get_snapshot_adaptation_audit(
         "ci_coverage_pct": ci_coverage,
         "snapshots": snaps
     }
+
+
+# ── Trade Post-Mortem & Attribution Store ─────────────────────────────────────
+
+def log_trade_postmortem(postmortem: dict[str, Any]) -> int:
+    """Stores a quantitative trade post-mortem autopsy in SQLite."""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO trade_postmortems (
+                trade_id, ticker, trade_type, status, entry_price, exit_price,
+                pnl_amount, pnl_pct, diagnosis_code, attribution_summary,
+                corrective_learning, stock_buffer_multiplier, regime_at_entry
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            postmortem.get("trade_id", 0),
+            postmortem.get("ticker", "").upper(),
+            postmortem.get("trade_type", ""),
+            postmortem.get("status", ""),
+            float(postmortem.get("entry_price", 0.0)),
+            float(postmortem.get("exit_price", 0.0)),
+            float(postmortem.get("pnl_amount", 0.0)),
+            float(postmortem.get("pnl_pct", 0.0)),
+            postmortem.get("diagnosis_code", "UNKNOWN"),
+            postmortem.get("attribution_summary", ""),
+            postmortem.get("corrective_learning", ""),
+            float(postmortem.get("stock_buffer_multiplier", 1.0)),
+            postmortem.get("regime_at_entry", "NORMAL")
+        ))
+        row_id = cursor.lastrowid
+
+        # Update or create adaptive stock buffer entry
+        ticker = postmortem.get("ticker", "").upper()
+        buf_mult = float(postmortem.get("stock_buffer_multiplier", 1.0))
+        is_hunt = 1 if postmortem.get("diagnosis_code") == "LIQUIDITY_SWEEP_HUNT" else 0
+        is_win = 1 if "WIN" in postmortem.get("diagnosis_code", "") or "BLOWOFF" in postmortem.get("diagnosis_code", "") else 0
+
+        cursor.execute("""
+            INSERT INTO adaptive_stock_buffers (ticker, current_stop_multiplier, liquidity_hunts_count, clean_wins_count)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(ticker) DO UPDATE SET
+                current_stop_multiplier = MAX(adaptive_stock_buffers.current_stop_multiplier, excluded.current_stop_multiplier),
+                liquidity_hunts_count = adaptive_stock_buffers.liquidity_hunts_count + excluded.liquidity_hunts_count,
+                clean_wins_count = adaptive_stock_buffers.clean_wins_count + excluded.clean_wins_count,
+                updated_at = CURRENT_TIMESTAMP
+        """, (ticker, buf_mult, is_hunt, is_win))
+
+        conn.commit()
+        return row_id
+
+
+def get_postmortem_history(limit: int = 50) -> list[dict[str, Any]]:
+    """Retrieves recent trade post-mortem autopsy records."""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT * FROM trade_postmortems
+            ORDER BY id DESC LIMIT ?
+        """, (limit,))
+        return [dict(r) for r in cursor.fetchall()]
+
+
+def get_stock_adaptive_buffer(ticker: str) -> dict[str, Any]:
+    """Gets stock-specific adaptive stop multiplier learned from past post-mortems."""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT * FROM adaptive_stock_buffers WHERE ticker = ?
+        """, (ticker.upper(),))
+        row = cursor.fetchone()
+        if row:
+            return dict(row)
+        return {
+            "ticker": ticker.upper(),
+            "current_stop_multiplier": 1.0,
+            "target_multiplier": 1.0,
+            "liquidity_hunts_count": 0,
+            "clean_wins_count": 0
+        }
+
+
+def log_regime_snapshot(regime_data: dict[str, Any]) -> None:
+    """Stores the daily market regime state."""
+    session_date = datetime.date.today().strftime("%Y-%m-%d")
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO regime_history (session_date, regime_code, nifty_price, vix_value, strategy_playbook)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(session_date) DO UPDATE SET
+                regime_code = excluded.regime_code,
+                nifty_price = excluded.nifty_price,
+                vix_value = excluded.vix_value,
+                strategy_playbook = excluded.strategy_playbook
+        """, (
+            session_date,
+            regime_data.get("regime_code", "NORMAL"),
+            float(regime_data.get("nifty_price", 0.0)),
+            float(regime_data.get("vix_value", 14.5)),
+            regime_data.get("strategy_playbook", "BALANCED")
+        ))
+        conn.commit()
+
+
+def get_recent_regime_history(limit: int = 15) -> list[dict[str, Any]]:
+    """Fetches recent daily market regime history."""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT * FROM regime_history
+            ORDER BY session_date DESC LIMIT ?
+        """, (limit,))
+        return [dict(r) for r in cursor.fetchall()]
 
