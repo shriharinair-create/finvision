@@ -40,6 +40,8 @@ from utils.tax_calculator import compute_indian_market_friction
 from utils.gtt import compute_gtt_order_parameters
 from utils.broker_gateway import build_broker_order_payload, dispatch_broker_order, SUPPORTED_BROKERS
 from utils.ml_ensemble import retrain_ensemble_from_trade_journal
+from utils.bse_helper import resolve_indian_ticker, is_bse_scrip_code
+from utils.bse_corporate import check_corporate_event_risk
 import textwrap
 
 
@@ -53,6 +55,7 @@ RECOMMENDED_DAY_TICKERS = [
 
 DEFAULT_LEADERS = [
     {"symbol": "^NSEI", "name": "NIFTY 50", "sector": "NSE Benchmark", "price": 23873.45, "change": -0.17},
+    {"symbol": "^BSESN", "name": "BSE SENSEX", "sector": "BSE Benchmark", "price": 76152.80, "change": -0.55},
     {"symbol": "^NSEBANK", "name": "BANK NIFTY", "sector": "Banking Index", "price": 57380.60, "change": 0.36},
     {"symbol": "RELIANCE.NS", "name": "Reliance Ind.", "sector": "Energy", "price": 1302.50, "change": -0.81},
     {"symbol": "TCS.NS", "name": "TCS", "sector": "IT", "price": 2320.10, "change": -1.19},
@@ -66,9 +69,10 @@ DEFAULT_LEADERS = [
 @st.cache_data(ttl=30, show_spinner=False)
 def get_india_market_leaders_quotes() -> list[dict[str, Any]]:
     """Fetches real-time live market quotes for key Indian benchmark indices and market leaders."""
-    tickers = ["^NSEI", "^NSEBANK", "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "INFY.NS", "ICICIBANK.NS", "SBIN.NS"]
+    tickers = ["^NSEI", "^BSESN", "^NSEBANK", "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "INFY.NS", "ICICIBANK.NS", "SBIN.NS"]
     names = {
         "^NSEI": ("NIFTY 50", "NSE Benchmark"),
+        "^BSESN": ("BSE SENSEX", "BSE Benchmark"),
         "^NSEBANK": ("BANK NIFTY", "Banking Index"),
         "RELIANCE.NS": ("Reliance Ind.", "Energy"),
         "TCS.NS": ("TCS", "IT"),
@@ -134,18 +138,27 @@ def render_mode0():
     usdinr_clr = "#F85149" if usdinr["chg_5d_pct"] > 0 else "#3FB950"
     gold_clr = "#E3B341"
 
+    sensex_p = market_regime.get("sensex_price", 76152.0)
+    sensex_chg = market_regime.get("sensex_change_pct", 0.0)
+    cross_badge = market_regime.get("cross_exchange_badge", "✅ NSE 50 & BSE Sensex Aligned")
+    cross_verdict = market_regime.get("cross_exchange_verdict", "CONFIRMED_NSE_BSE_ALIGNMENT")
+    cross_color = "#3FB950" if cross_verdict == "CONFIRMED_NSE_BSE_ALIGNMENT" else "#FFB300"
+
     st.markdown(
         textwrap.dedent(f"""
         <div style="background:#161B22; border:1px solid #30363D; border-radius:8px; padding:12px 16px; margin:14px 0;">
           <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
             <div>
-              <span style="font-size:11px; color:#8B949E; font-weight:700;">🏛️ CURRENT INDIAN MARKET REGIME</span>
+              <span style="font-size:11px; color:#8B949E; font-weight:700;">🏛️ CURRENT INDIAN DUAL-EXCHANGE REGIME</span>
               <div style="font-size:16px; font-weight:800; color:{market_regime['badge_color']};">
                 {market_regime['regime_name']}
               </div>
             </div>
             <div style="text-align:right;">
-              <span style="font-size:11px; color:#8B949E;">India VIX: <strong>{market_regime['vix_value']}</strong> | Nifty vs EMA20: <strong>{market_regime['nifty_pct_ema20']:+.1f}%</strong></span>
+              <span style="font-size:11px; color:#8B949E;">
+                Nifty: <strong>₹{market_regime.get('nifty_price', 23873):,.0f}</strong> ({market_regime['nifty_pct_ema20']:+.1f}% vs EMA20) · 
+                Sensex: <strong>₹{sensex_p:,.0f}</strong> ({sensex_chg:+.2f}%)
+              </span>
               <div style="font-size:12px; font-weight:700; color:#58A6FF;">Playbook: {market_regime['strategy_playbook']}</div>
             </div>
           </div>
@@ -159,7 +172,10 @@ def render_mode0():
               USD/INR: <strong>₹{usdinr['price']}</strong> (<span style="color:{usdinr_clr}">{usdinr['chg_5d_pct']:+.1f}%</span>) · 
               Gold: <strong>${gold['price']:,.0f}</strong>
             </div>
-            <div>
+            <div style="display:flex; gap:6px; align-items:center;">
+              <span style="font-size:10px; font-weight:700; background:#21262D; padding:2px 8px; border-radius:10px; color:{cross_color};">
+                {cross_badge}
+              </span>
               <span style="font-size:10px; font-weight:800; background:#21262D; padding:2px 8px; border-radius:10px; color:#58A6FF;">
                 {macro_baro['macro_badge']}
               </span>
@@ -535,6 +551,11 @@ def render_mode0():
                     shares=s["shares"]
                 )
 
+                bse_event = check_corporate_event_risk(tick)
+                bse_event_badge = ""
+                if bse_event.get("has_imminent_event"):
+                    bse_event_badge = f'<span style="background:#F8514922;color:#F85149;border:1px solid #F8514944;padding:2px 8px;border-radius:12px;font-size:10px;font-weight:700;">{bse_event["warning_badge"]}</span>'
+
                 with st.container():
                     card_html_t1 = "\n".join([
                         f'<div class="top10-card" style="border-left: 4px solid #58A6FF;margin-bottom:18px;">',
@@ -551,6 +572,7 @@ def render_mode0():
                         f'<span class="tactical-badge tactical-badge-up">{esc(s["bias"])}</span>',
                         f'<span style="background:{s["meta_eval"]["badge_color"]}22;color:{s["meta_eval"]["badge_color"]};border:1px solid {s["meta_eval"]["badge_color"]}44;padding:2px 8px;border-radius:12px;font-size:11px;font-weight:700;">{s["meta_eval"]["status_badge"]}</span>',
                         anti_sweep_badge,
+                        bse_event_badge,
                         f'<span style="font-size:11px;color:var(--amber);font-family:var(--mono);">Expected Inflection @ {esc(s["flip_time"])}</span>',
                         f'</div>',
                         f'<div class="top10-grid-levels">',

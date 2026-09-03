@@ -109,6 +109,12 @@ def ingest_live_news() -> int:
             ids=ids,
         )
 
+    try:
+        from utils.bse_corporate import ingest_bse_filings_to_vector_news
+        ingest_bse_filings_to_vector_news()
+    except Exception:
+        pass
+
     return len(documents)
 
 

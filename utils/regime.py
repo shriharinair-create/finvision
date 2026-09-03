@@ -1,11 +1,12 @@
 """
 finvision/utils/regime.py
 =========================
-Indian Market Regime Detection & Dynamic Playbook Strategy Switching.
-Classifies the broad market into 4 distinct quant regimes using:
+Indian Market Dual-Exchange Regime Detection & Dynamic Playbook Strategy Switching.
+Classifies the broad Indian equity market using:
   1. Nifty 50 (^NSEI) Structural Trend (EMA 20, 50, 200 stack alignment)
-  2. India VIX (^INDIAVIX) Volatility Levels (<13 Low, 13-18 Normal, >18 High-Risk)
-  3. Short-term Trend Momentum & Volatility Compression
+  2. BSE Sensex (^BSESN) Heavyweight Confirmation & 30-stock trend
+  3. India VIX (^INDIAVIX) Volatility Levels (<13 Low, 13-18 Normal, >18 High-Risk)
+  4. Cross-Exchange Breadth Divergence (Nifty vs Sensex alignment)
 
 Outputs dynamic adaptive parameters for position sizing, stop-loss buffers,
 and strategy playbook gating (Breakout vs Mean-Reversion vs Defense).
@@ -21,11 +22,12 @@ import yfinance as yf
 
 def detect_indian_market_regime(
     nse_df: Optional[pd.DataFrame] = None,
-    vix_df: Optional[pd.DataFrame] = None
+    vix_df: Optional[pd.DataFrame] = None,
+    bse_df: Optional[pd.DataFrame] = None,
 ) -> dict[str, Any]:
     """
-    Detects the current Indian Market Regime.
-    Fetches real-time Nifty 50 (^NSEI) and India VIX (^INDIAVIX) if dataframes are not passed.
+    Detects the current Indian Market Regime across NSE and BSE.
+    Fetches real-time Nifty 50 (^NSEI), BSE Sensex (^BSESN), and India VIX (^INDIAVIX).
     
     Regimes:
       - BULL_MARKUP: Strong upward trend, low-to-moderate volatility. Breakouts favored.
@@ -43,7 +45,32 @@ def detect_indian_market_regime(
         except Exception:
             nse_df = pd.DataFrame()
 
-    # 2. Fetch India VIX if missing
+    # 2. Fetch BSE Sensex if missing
+    sensex_val = 78500.0
+    sensex_pct_chg = 0.0
+    sensex_trend = "NEUTRAL"
+    if bse_df is None or bse_df.empty:
+        try:
+            b_data = yf.download("^BSESN", period="1mo", interval="1d", progress=False)
+            if isinstance(b_data.columns, pd.MultiIndex):
+                b_data.columns = [c[0] for c in b_data.columns]
+            if not b_data.empty and "Close" in b_data:
+                b_close = b_data["Close"].dropna().astype(float)
+                sensex_val = float(b_close.iloc[-1])
+                prev_b = float(b_close.iloc[-2]) if len(b_close) >= 2 else sensex_val
+                sensex_pct_chg = round(((sensex_val - prev_b) / max(1.0, prev_b)) * 100.0, 2)
+                b_ema20 = float(b_close.ewm(span=20, adjust=False).mean().iloc[-1])
+                sensex_trend = "BULLISH" if sensex_val > b_ema20 else "BEARISH"
+        except Exception:
+            pass
+    else:
+        if "Close" in bse_df:
+            b_close = bse_df["Close"].dropna().astype(float)
+            sensex_val = float(b_close.iloc[-1])
+            prev_b = float(b_close.iloc[-2]) if len(b_close) >= 2 else sensex_val
+            sensex_pct_chg = round(((sensex_val - prev_b) / max(1.0, prev_b)) * 100.0, 2)
+
+    # 3. Fetch India VIX if missing
     vix_val = 14.5  # Default benchmark
     if vix_df is None or vix_df.empty:
         try:
@@ -64,6 +91,12 @@ def detect_indian_market_regime(
             "regime_code": "NORMAL_BALANCED",
             "regime_name": "Balanced Market Regime",
             "badge_color": "#58A6FF",
+            "nifty_price": 24000.0,
+            "nifty_pct_ema20": 0.0,
+            "sensex_price": round(sensex_val, 2),
+            "sensex_change_pct": round(sensex_pct_chg, 2),
+            "sensex_trend": sensex_trend,
+            "cross_exchange_verdict": "CONFIRMED_NSE_BSE_ALIGNMENT",
             "vix_value": round(vix_val, 2),
             "vix_regime": "NORMAL",
             "strategy_playbook": "BALANCED_SWING",
@@ -77,7 +110,7 @@ def detect_indian_market_regime(
     close = nse_df["Close"].astype(float).dropna()
     last_nifty = float(close.iloc[-1])
 
-    # Moving averages
+    # Moving averages for Nifty 50
     ema20 = float(close.ewm(span=20, adjust=False).mean().iloc[-1])
     ema50 = float(close.ewm(span=50, adjust=False).mean().iloc[-1]) if len(close) >= 50 else ema20
     sma200 = float(close.rolling(window=min(200, len(close))).mean().iloc[-1])
@@ -96,6 +129,15 @@ def detect_indian_market_regime(
         vix_regime = "COMPLACENT_LOW_VOL"
     else:
         vix_regime = "HEALTHY_NORMAL"
+
+    # Cross-Exchange Alignment Check
+    nifty_trend = "BULLISH" if last_nifty > ema20 else "BEARISH"
+    if nifty_trend == sensex_trend:
+        cross_verdict = "CONFIRMED_NSE_BSE_ALIGNMENT"
+        cross_badge = "✅ NSE 50 & BSE Sensex Aligned"
+    else:
+        cross_verdict = "BREADTH_DIVERGENCE_WARNING"
+        cross_badge = "⚠️ Cross-Exchange Divergence Detected"
 
     # ── Regime Classification Logic ──────────────────────────────────────────
     if vix_val >= 18.5 or (abs(ret_5d) >= 2.5 and pct_above_ema20 < 0):
@@ -122,7 +164,7 @@ def detect_indian_market_regime(
         stop_mult = 1.00        # Standard ATR stops
         risk_mult = 1.00        # 100% full position size
         guidance = (
-            f"Nifty 50 in clean institutional markup (+{pct_above_ema20:.1f}% vs EMA20). "
+            f"Nifty 50 in clean institutional markup (+{pct_above_ema20:.1f}% vs EMA20) confirmed by Sensex ({sensex_val:,.0f}). "
             f"Trend-following and high-alpha breakouts have strong statistical follow-through."
         )
 
@@ -136,7 +178,7 @@ def detect_indian_market_regime(
         stop_mult = 0.90        # Strict quick cut
         risk_mult = 0.40        # Reduce capital sizing to 40%
         guidance = (
-            f"Nifty 50 trading below key EMAs ({pct_above_ema20:.1f}% vs EMA20). "
+            f"Nifty 50 trading below key EMAs ({pct_above_ema20:.1f}% vs EMA20) with Sensex at {sensex_val:,.0f} ({sensex_pct_chg:+.2f}%). "
             f"Capital preservation mode active. Long setups restricted to high-conviction value."
         )
 
@@ -150,7 +192,7 @@ def detect_indian_market_regime(
         stop_mult = 1.00
         risk_mult = 0.85
         guidance = (
-            f"Market consolidating with low VIX ({vix_val:.1f}). Smart money quietly absorbing float. "
+            f"Market consolidating with low VIX ({vix_val:.1f}). Smart money quietly absorbing float across NSE and BSE. "
             f"Accumulate near range support before volatility expansion."
         )
 
@@ -160,6 +202,11 @@ def detect_indian_market_regime(
         "badge_color": badge_color,
         "nifty_price": round(last_nifty, 2),
         "nifty_pct_ema20": round(pct_above_ema20, 2),
+        "sensex_price": round(sensex_val, 2),
+        "sensex_change_pct": round(sensex_pct_chg, 2),
+        "sensex_trend": sensex_trend,
+        "cross_exchange_verdict": cross_verdict,
+        "cross_exchange_badge": cross_badge,
         "vix_value": round(vix_val, 2),
         "vix_regime": vix_regime,
         "strategy_playbook": strategy_playbook,

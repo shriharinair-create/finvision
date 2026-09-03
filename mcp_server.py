@@ -33,6 +33,8 @@ from utils.macro import get_live_cross_asset_macro
 from utils.forecasting import compute_quantitative_confluence_forecast
 from utils.gtt import compute_gtt_order_parameters
 from utils.tax_calculator import compute_indian_market_friction
+from utils.bse_helper import resolve_indian_ticker
+from utils.bse_corporate import check_corporate_event_risk
 
 
 TOOLS_DEFINITION = [
@@ -95,6 +97,28 @@ TOOLS_DEFINITION = [
                 "is_intraday": {"type": "boolean", "description": "True for intraday (MIS), False for delivery (CNC)", "default": True}
             },
             "required": ["entry_price", "exit_price", "shares"]
+        }
+    },
+    {
+        "name": "resolve_bse_security",
+        "description": "Universally resolves any 6-digit BSE Scrip Code (e.g. '500325') or symbol ('RELIANCE') into dual-exchange identifiers (.NS / .BO) and security name.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "6-digit BSE Scrip Code or alphabetical symbol"}
+            },
+            "required": ["query"]
+        }
+    },
+    {
+        "name": "check_bse_event_risk",
+        "description": "Evaluates whether an Indian stock faces an imminent high-volatility corporate binary event (Earnings results, Board meetings, Dividends, Stock Splits) within 72 hours.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "ticker": {"type": "string", "description": "Stock ticker or 6-digit BSE scrip code"}
+            },
+            "required": ["ticker"]
         }
     }
 ]
@@ -182,6 +206,16 @@ def handle_tool_call(tool_name: str, arguments: Dict[str, Any]) -> str:
             shares=int(arguments.get("shares", 1)),
             is_intraday=bool(arguments.get("is_intraday", True)),
         )
+        return json.dumps(res, indent=2)
+
+    elif tool_name == "resolve_bse_security":
+        query = arguments.get("query", "")
+        res = resolve_indian_ticker(query)
+        return json.dumps(res, indent=2)
+
+    elif tool_name == "check_bse_event_risk":
+        ticker = arguments.get("ticker", "")
+        res = check_corporate_event_risk(ticker)
         return json.dumps(res, indent=2)
 
     return json.dumps({"error": f"Tool '{tool_name}' not recognized"})

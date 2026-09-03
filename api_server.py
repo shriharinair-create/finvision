@@ -29,6 +29,8 @@ from utils.forecasting import compute_quantitative_confluence_forecast
 from utils.gtt import compute_gtt_order_parameters
 from utils.tax_calculator import compute_indian_market_friction
 from utils.market_store import log_paper_trade
+from utils.bse_helper import resolve_indian_ticker
+from utils.bse_bhavcopy import get_bse_eod_quote
 
 app = FastAPI(
     title="FinVision Headless Quantitative API",
@@ -164,6 +166,27 @@ def get_gtt(ticker: str):
         return {"status": "SUCCESS", "gtt_order": gtt}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/bse/resolve/{query}")
+def resolve_bse(query: str, exchange: str = "NSE"):
+    """Universally resolves any 6-digit BSE Scrip Code or alphabetical symbol."""
+    res = resolve_indian_ticker(query, preferred_exchange=exchange)
+    return {"status": "SUCCESS", "resolution": res}
+
+
+@app.get("/api/bse/quote/{ticker_or_code}")
+def get_bse_quote(ticker_or_code: str):
+    """Retrieves official BSE EOD Bhavcopy quote and turnover stats from local database."""
+    quote = get_bse_eod_quote(ticker_or_code)
+    if not quote:
+        resolved = resolve_indian_ticker(ticker_or_code)
+        return {
+            "status": "NOT_IN_LOCAL_BHAVCOPY",
+            "resolution": resolved,
+            "message": "Security resolved. Ingest latest Bhavcopy via /utils/bse_bhavcopy.py to populate EOD statistics."
+        }
+    return {"status": "SUCCESS", "quote": quote}
 
 
 @app.post("/api/webhook/tradingview")
