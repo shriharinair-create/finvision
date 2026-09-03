@@ -96,6 +96,7 @@ if target_mode:
     for idx, opt in enumerate(mode_options):
         if target_mode.lower() in opt.lower():
             default_mode_index = idx
+            st.session_state["top_bar_mode_select"] = opt
             break
     del st.session_state["target_operating_mode"]
 elif "active_mode_index" in st.session_state:
