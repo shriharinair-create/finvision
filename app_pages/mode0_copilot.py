@@ -39,6 +39,43 @@ RECOMMENDED_DAY_TICKERS = [
 ]
 
 
+@st.cache_data(ttl=30, show_spinner=False)
+def get_india_market_leaders_quotes() -> list[dict[str, Any]]:
+    """Fetches real-time live market quotes for key Indian benchmark indices and market leaders."""
+    tickers = ["^NSEI", "^NSEBANK", "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "INFY.NS", "ICICIBANK.NS", "SBIN.NS"]
+    names = {
+        "^NSEI": ("NIFTY 50", "NSE Benchmark"),
+        "^NSEBANK": ("BANK NIFTY", "Banking Index"),
+        "RELIANCE.NS": ("Reliance Ind.", "Energy"),
+        "TCS.NS": ("TCS", "IT"),
+        "HDFCBANK.NS": ("HDFC Bank", "Banking"),
+        "INFY.NS": ("Infosys", "IT"),
+        "ICICIBANK.NS": ("ICICI Bank", "Banking"),
+        "SBIN.NS": ("State Bank of India", "Banking"),
+    }
+    try:
+        df = yf.download(tickers, period="5d", interval="1d", progress=False)["Close"]
+        out = []
+        for t in tickers:
+            if t in df:
+                s = df[t].dropna()
+                if not s.empty:
+                    p = float(s.iloc[-1])
+                    prev = float(s.iloc[-2]) if len(s) > 1 else p
+                    chg = ((p - prev) / prev) * 100
+                    disp_name, sec = names.get(t, (t, "Stock"))
+                    out.append({
+                        "symbol": t,
+                        "name": disp_name,
+                        "sector": sec,
+                        "price": round(p, 2),
+                        "change": round(chg, 2)
+                    })
+        return out
+    except Exception:
+        return []
+
+
 def render_mode0():
     # ── Hero Banner ───────────────────────────────────────────────────────────
     st.markdown(
@@ -84,6 +121,21 @@ def render_mode0():
         """),
         unsafe_allow_html=True
     )
+
+    # ── 🏛️ India Market Leaders & Benchmark Radar ───────────────────────────
+    leaders_quotes = get_india_market_leaders_quotes()
+    if leaders_quotes:
+        with st.expander("🏛️ India Market Leaders & Benchmark Quotes (Live)", expanded=False):
+            st.caption("Real-time streaming prices for Dalal Street benchmark indices and top market leaders.")
+            for i in range(0, len(leaders_quotes), 4):
+                cols = st.columns(4)
+                for col_idx, item in enumerate(leaders_quotes[i:i+4]):
+                    with cols[col_idx]:
+                        st.metric(
+                            label=f"{item['name']} ({item['symbol']})",
+                            value=f"₹{item['price']:,.2f}",
+                            delta=f"{item['change']:+.2f}%"
+                        )
 
     # ── Persona & Track Selector ──────────────────────────────────────────────
     c_track, c_budget, c_risk = st.columns([3, 2, 2])
