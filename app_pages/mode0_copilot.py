@@ -25,10 +25,12 @@ from utils.fundamental_wealth import (
     BLUE_CHIP_COMPOUNDERS,
 )
 from utils.risk import compute_position_size
-from utils.market_store import log_paper_trade, log_regime_snapshot, get_stock_adaptive_buffer
+from utils.market_store import log_paper_trade, log_regime_snapshot, get_stock_adaptive_buffer, save_veteran_rule, get_veteran_rules
 from utils.components import render_eli5_box, esc
 from utils.regime import detect_indian_market_regime
 from utils.meta_labeling import evaluate_meta_labeling_filter
+from utils.veteran_evaluator import fact_check_veteran_rule
+import textwrap
 
 
 RECOMMENDED_DAY_TICKERS = [
@@ -40,7 +42,7 @@ RECOMMENDED_DAY_TICKERS = [
 def render_mode0():
     # ── Hero Banner ───────────────────────────────────────────────────────────
     st.markdown(
-        """
+        textwrap.dedent("""
         <div class="copilot-hero-card">
             <div class="copilot-hero-title">🤖 FinVision Smart Trade & Wealth Copilot</div>
             <div class="copilot-hero-subtitle">
@@ -49,7 +51,7 @@ def render_mode0():
                 budget-based position sizing, and plain-English ELI5 explanations.
             </div>
         </div>
-        """,
+        """),
         unsafe_allow_html=True,
     )
 
@@ -61,7 +63,7 @@ def render_mode0():
         pass
 
     st.markdown(
-        f"""
+        textwrap.dedent(f"""
         <div style="background:#161B22; border:1px solid #30363D; border-radius:8px; padding:12px 16px; margin:14px 0;">
           <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
             <div>
@@ -79,7 +81,7 @@ def render_mode0():
             💡 <em>{market_regime['playbook_guidance']}</em>
           </div>
         </div>
-        """,
+        """),
         unsafe_allow_html=True
     )
 
@@ -137,6 +139,54 @@ def render_mode0():
             t_clean = f"{t_clean}.NS"
         active_custom_ticker = t_clean
         st.success(f"🎯 Copilot is analyzing custom stock: **{active_custom_ticker}**")
+
+    # ── 🎖️ Veteran Wisdom & Advice Fact-Check Section ────────────────────────
+    with st.expander("🎖️ Feed Advice from Stock Market Veterans (AI Empirical Fact-Check)"):
+        st.caption(
+            "Heard a trading rule, tip, or heuristic from a Dalal Street veteran, mentor, or financial book? "
+            "Type it here. The AI Learner will run an empirical walk-forward backtest across 2 years of actual NSE data, "
+            "measure its statistical edge, and decide whether to incorporate it into its active brain or reject it as an unbacked retail myth."
+        )
+        c_v1, c_v2 = st.columns([3, 1])
+        with c_v1:
+            v_input = st.text_input(
+                "Enter Veteran Advice / Rule",
+                placeholder="e.g. When Reliance RSI drops below 40, buy for a 5 day swing...",
+                key="copilot_veteran_rule_input"
+            ).strip()
+        with c_v2:
+            v_author = st.text_input("Source / Mentor", value="Dalal Street Veteran", key="copilot_veteran_author")
+        
+        c_vbtn, _ = st.columns([2, 3])
+        with c_vbtn:
+            check_v_btn = st.button("🧪 Fact-Check With AI Learner", key="btn_check_veteran_copilot", use_container_width=True)
+
+        if check_v_btn and v_input:
+            with st.spinner("🤖 AI Learner is parsing rule conditions and running a 2-year walk-forward backtest..."):
+                v_res = fact_check_veteran_rule(v_input, author_or_source=v_author)
+                save_veteran_rule(v_res)
+            
+            st.markdown(
+                textwrap.dedent(f"""
+                <div style="background:#161B22; border:2px solid {v_res['badge_color']}; border-radius:10px; padding:14px; margin:10px 0;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+                        <span style="font-size:15px; font-weight:800; color:{v_res['badge_color']};">{v_res['verdict_badge']}</span>
+                        <span style="font-size:11px; color:#8B949E;">Target Stock: <strong>{v_res.get('target_ticker', 'N/A')}</strong> | Source: {v_res.get('author', 'Mentor')}</span>
+                    </div>
+                    <div style="margin-top:8px; font-size:12px; color:#E6EDF3; line-height:1.5;">
+                        {v_res['summary_report']}
+                    </div>
+                </div>
+                """),
+                unsafe_allow_html=True
+            )
+            v_m1, v_m2, v_m3, v_m4 = st.columns(4)
+            v_m1.metric("Historical Triggers", v_res["occurrences"])
+            v_m2.metric("Win Rate %", f"{v_res['win_rate_pct']:.1f}%")
+            v_m3.metric("Profit Factor", f"{v_res['profit_factor']:.2f}×")
+            v_m4.metric("Avg Return / Trade", f"{v_res['avg_return_pct']:+.2f}%")
+
+    st.divider()
 
     # ── ⚡ TRACK 1: DAY TRADING & QUICK PROFITS ────────────────────────────────
     if track_choice.startswith("⚡"):
@@ -254,7 +304,7 @@ def render_mode0():
 
                 with st.container():
                     st.markdown(
-                        f"""
+                        textwrap.dedent(f"""
                         <div class="top10-card" style="border-left: 4px solid #58A6FF;margin-bottom:18px;">
                             <div class="top10-header">
                                 <div>
@@ -291,7 +341,7 @@ def render_mode0():
                                 <span>Buy <strong>{s['shares']:,} shares</strong> (₹{s['pos_val']:,.0f} value) · Max Loss strictly capped at ₹{s['risk_val']:,.0f} ({s['meta_eval']['bet_sizing_factor']}x sizing)</span>
                             </div>
                         </div>
-                        """,
+                        """),
                         unsafe_allow_html=True,
                     )
 
@@ -375,7 +425,7 @@ def render_mode0():
 
                 with st.container():
                     st.markdown(
-                        f"""
+                        textwrap.dedent(f"""
                         <div class="top10-card" style="border-top: 4px solid #3FB950;margin-bottom:18px;">
                             <div class="top10-header">
                                 <div>
@@ -421,7 +471,7 @@ def render_mode0():
                                 <span>Invest <strong>₹{monthly_sip:,.0f}/month</strong> → Projected to grow from ₹{sip_invested:,.0f} to <strong>₹{sip_5y_val:,.0f}</strong> in 5 years</span>
                             </div>
                         </div>
-                        """,
+                        """),
                         unsafe_allow_html=True,
                     )
 
