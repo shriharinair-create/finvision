@@ -248,6 +248,9 @@ def render_mode0():
             for s_idx, s in enumerate(sorted_setups, start=1):
                 tick = s["ticker"]
                 est_profit_inr = round(s["shares"] * (s["target1"] - s["entry"]), 0)
+                anti_sweep_badge = ""
+                if s.get("adaptive_stop_mult", 1.0) > 1.0:
+                    anti_sweep_badge = f'<span style="background:#A371F722;color:#A371F7;border:1px solid #A371F744;padding:2px 8px;border-radius:12px;font-size:10px;font-weight:700;">🛡️ Anti-Sweep Stop ({s["adaptive_stop_mult"]}x ATR)</span>'
 
                 with st.container():
                     st.markdown(
@@ -266,7 +269,7 @@ def render_mode0():
                                 <span class="tactical-badge tactical-badge-action">⚡ {esc(s['action'])}</span>
                                 <span class="tactical-badge tactical-badge-up">{esc(s['bias'])}</span>
                                 <span style="background:{s['meta_eval']['badge_color']}22;color:{s['meta_eval']['badge_color']};border:1px solid {s['meta_eval']['badge_color']}44;padding:2px 8px;border-radius:12px;font-size:11px;font-weight:700;">{s['meta_eval']['status_badge']}</span>
-                                {f'<span style="background:#A371F722;color:#A371F7;border:1px solid #A371F744;padding:2px 8px;border-radius:12px;font-size:10px;font-weight:700;">🛡️ Anti-Sweep Stop ({s[\"adaptive_stop_mult\"]}x ATR)</span>' if s['adaptive_stop_mult'] > 1.0 else ''}
+                                {anti_sweep_badge}
                                 <span style="font-size:11px;color:var(--amber);font-family:var(--mono);">Expected Inflection @ {esc(s['flip_time'])}</span>
                             </div>
                             <div class="top10-grid-levels">
