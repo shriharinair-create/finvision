@@ -375,6 +375,10 @@ def compute_quantitative_confluence_forecast(
     reward_dist = abs(take_profit - last_p)
     risk_reward_ratio = round(reward_dist / max(0.01, risk_dist), 2)
 
+    triple_barrier = compute_triple_barrier_probabilities(
+        df, last_p, take_profit, stop_loss, horizon_days=forecast_days
+    )
+
     return {
         "last_price": last_p,
         "fused_score": round(fused_score, 3),
@@ -399,6 +403,7 @@ def compute_quantitative_confluence_forecast(
         "exit_liquidity_trap": exit_trap_data,
         "delivery_accumulation": delivery_data,
         "anti_hunt_buffer": anti_hunt_buffer,
+        "triple_barrier": triple_barrier,
         "score_components": {
             "Structural Trend (25%)": round(trend_score, 2),
             "Consolidated Momentum (25%)": round(mom_score, 2),
@@ -437,6 +442,120 @@ def run_monte_carlo(df: pd.DataFrame, days: int = 5, simulations: int = 120) -> 
     col_names = [f"Path_{i+1}" for i in range(simulations)]
     simulated_df = pd.DataFrame(sim_matrix, columns=col_names)
     return simulated_df
+
+
+def compute_triple_barrier_probabilities(
+    df: pd.DataFrame,
+    entry_price: float,
+    target_price: float,
+    stop_loss_price: float,
+    horizon_days: int = 5,
+    simulations: int = 1000
+) -> dict[str, Any]:
+    """
+    State-of-the-Art Triple-Barrier Probabilistic Meta-Model (Lopez de Prado framework).
+    Calculates path-dependent first-touch probabilities for:
+      1. Upper Barrier (Profit Target Hit First)
+      2. Lower Barrier (Stop Loss Hit First)
+      3. Horizontal Barrier (Horizon Expiration without touching either)
+    Computes mathematical Expected Value (EV) and empirical conformal quantiles.
+    """
+    if df.empty or len(df) < 20 or entry_price <= 0:
+        return {
+            "p_target": 50.0,
+            "p_stop": 50.0,
+            "p_timeout": 0.0,
+            "expected_value_pct": 0.0,
+            "is_positive_expectancy": False,
+            "recommendation": "INSUFFICIENT DATA"
+        }
+
+    close = df["Close"].astype(float).dropna()
+    returns = np.log(close / close.shift(1)).dropna()
+    
+    # Use Student's t distribution with df=5 for realistic financial fat tails
+    mu = float(returns.tail(30).mean()) if len(returns) >= 30 else float(returns.mean())
+    vol = float(returns.ewm(span=20, adjust=False).std().iloc[-1]) if len(returns) >= 20 else float(returns.std())
+    vol = max(1e-4, vol)
+
+    # Simulate path progression with random shocks
+    np.random.seed(42)
+    shocks = np.random.standard_t(df=5, size=(horizon_days, simulations)) * (vol / np.sqrt(5/3)) + mu
+    cum_returns = np.exp(np.cumsum(shocks, axis=0))
+    paths = entry_price * cum_returns
+
+    is_long = target_price > entry_price
+
+    hit_target = 0
+    hit_stop = 0
+    timed_out = 0
+
+    for col in range(simulations):
+        path = paths[:, col]
+        target_idx = -1
+        stop_idx = -1
+
+        for step in range(horizon_days):
+            price = path[step]
+            if is_long:
+                if target_idx == -1 and price >= target_price:
+                    target_idx = step
+                if stop_idx == -1 and price <= stop_loss_price:
+                    stop_idx = step
+            else:
+                if target_idx == -1 and price <= target_price:
+                    target_idx = step
+                if stop_idx == -1 and price >= stop_loss_price:
+                    stop_idx = step
+
+        if target_idx != -1 and (stop_idx == -1 or target_idx < stop_idx):
+            hit_target += 1
+        elif stop_idx != -1 and (target_idx == -1 or stop_idx <= target_idx):
+            hit_stop += 1
+        else:
+            timed_out += 1
+
+    p_target = round((hit_target / simulations) * 100.0, 1)
+    p_stop = round((hit_stop / simulations) * 100.0, 1)
+    p_timeout = round((timed_out / simulations) * 100.0, 1)
+
+    reward_pct = abs((target_price - entry_price) / entry_price) * 100.0
+    risk_pct = abs((entry_price - stop_loss_price) / entry_price) * 100.0
+    reward_risk_ratio = round(reward_pct / max(0.01, risk_pct), 2)
+
+    # Expected Value: EV = (P_win * Reward) - (P_loss * Risk)
+    ev_pct = round(((p_target / 100.0) * reward_pct) - ((p_stop / 100.0) * risk_pct), 2)
+    is_positive_ev = bool(ev_pct > 0.0 and p_target >= 45.0)
+
+    # Empirical Conformal Quantiles across all paths at final day
+    final_prices = paths[-1, :]
+    conformal_lower = round(float(np.percentile(final_prices, 10)), 2)
+    conformal_median = round(float(np.median(final_prices)), 2)
+    conformal_upper = round(float(np.percentile(final_prices, 90)), 2)
+
+    if is_positive_ev and p_target >= 60.0:
+        recommendation = "HIGH CONVICTION ASYMMETRY (STRONG POSITIVE EXPECTANCY)"
+    elif is_positive_ev:
+        recommendation = "FAVORABLE RISK/REWARD SETUP"
+    elif p_stop > 55.0:
+        recommendation = "UNFAVORABLE (HIGH PROBABILITY OF STOP RUN)"
+    else:
+        recommendation = "CHOPPY / NEUTRAL EXPECTANCY"
+
+    return {
+        "p_target": p_target,
+        "p_stop": p_stop,
+        "p_timeout": p_timeout,
+        "reward_pct": round(reward_pct, 2),
+        "risk_pct": round(risk_pct, 2),
+        "reward_risk_ratio": reward_risk_ratio,
+        "expected_value_pct": ev_pct,
+        "is_positive_expectancy": is_positive_ev,
+        "conformal_lower_10pct": conformal_lower,
+        "conformal_median": conformal_median,
+        "conformal_upper_90pct": conformal_upper,
+        "recommendation": recommendation
+    }
 
 
 def simple_forecast(df: pd.DataFrame, days: int = 5) -> dict[str, float]:

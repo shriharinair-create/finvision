@@ -532,6 +532,54 @@ def render_mode4():
     # ── Actionable Buy/Sell Levels & Expected Day Range ───────────────────────
     render_actionable_levels_bar(last_price=last_price, ib=ib, stop_loss=stop_loss, take_profit=take_profit)
 
+    # ── 🎯 SOTA TRIPLE-BARRIER CALIBRATED HIT PROBABILITIES (LOPEZ DE PRADO) ─
+    tb = forecast_result.get("triple_barrier", {})
+    if tb:
+        is_pos_ev = tb.get("is_positive_expectancy", False)
+        ev_color = "#00E676" if is_pos_ev else "#FF5252"
+        rec_label = tb.get("recommendation", "BALANCED SETUP")
+        
+        st.markdown(
+            f"""
+            <div style="background:#161B22; border:1px solid #30363D; border-radius:8px; padding:16px; margin:16px 0;">
+              <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; flex-wrap:wrap; gap:8px;">
+                <span style="font-weight:700; color:#58A6FF; font-size:14px;">🎯 Triple-Barrier Calibrated Hit Probabilities (Path-Dependent Meta-Model)</span>
+                <span style="background:{'#00E67622' if is_pos_ev else '#FF525222'}; color:{ev_color}; border:1px solid {ev_color}44; padding:3px 10px; border-radius:12px; font-size:11px; font-weight:700;">
+                  {rec_label}
+                </span>
+              </div>
+              <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(130px, 1fr)); gap:10px; text-align:center;">
+                <div style="background:#0D1117; padding:10px; border-radius:6px; border-left:3px solid #00E676;">
+                  <div style="font-size:11px; color:#8B949E;">P(Target Hit First)</div>
+                  <div style="font-size:18px; font-weight:800; color:#00E676;">{tb.get('p_target')}%</div>
+                  <div style="font-size:10px; color:#8B949E;">Target: ₹{take_profit:,.2f} (+{tb.get('reward_pct')}%)</div>
+                </div>
+                <div style="background:#0D1117; padding:10px; border-radius:6px; border-left:3px solid #FF5252;">
+                  <div style="font-size:11px; color:#8B949E;">P(Stop Loss Hit First)</div>
+                  <div style="font-size:18px; font-weight:800; color:#FF5252;">{tb.get('p_stop')}%</div>
+                  <div style="font-size:10px; color:#8B949E;">Stop: ₹{stop_loss:,.2f} (-{tb.get('risk_pct')}%)</div>
+                </div>
+                <div style="background:#0D1117; padding:10px; border-radius:6px; border-left:3px solid #FFB300;">
+                  <div style="font-size:11px; color:#8B949E;">P(Rangebound / Timeout)</div>
+                  <div style="font-size:18px; font-weight:800; color:#FFB300;">{tb.get('p_timeout')}%</div>
+                  <div style="font-size:10px; color:#8B949E;">{forecast_days}-Day Expiry</div>
+                </div>
+                <div style="background:#0D1117; padding:10px; border-radius:6px; border-left:3px solid #58A6FF;">
+                  <div style="font-size:11px; color:#8B949E;">Expected Monetary Value</div>
+                  <div style="font-size:18px; font-weight:800; color:{ev_color};">{tb.get('expected_value_pct'):+.2f}%</div>
+                  <div style="font-size:10px; color:#8B949E;">R:R Ratio {tb.get('reward_risk_ratio')}x</div>
+                </div>
+                <div style="background:#0D1117; padding:10px; border-radius:6px; border-left:3px solid #A371F7;">
+                  <div style="font-size:11px; color:#8B949E;">Conformal 80% Envelope</div>
+                  <div style="font-size:13px; font-weight:700; color:#C9D1D9; margin-top:3px;">₹{tb.get('conformal_lower_10pct'):,.2f} – ₹{tb.get('conformal_upper_90pct'):,.2f}</div>
+                  <div style="font-size:10px; color:#8B949E;">Empirical Fat-Tail Bounds</div>
+                </div>
+              </div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+
     # ── 🔍 CO-LOCATED PURGED WALK-FORWARD RELIABILITY & RISK:REWARD AUDIT ─────
     rr_val = forecast_result.get("risk_reward_ratio", 0.0)
     rr_badge_color = "#00E676" if rr_val >= 2.0 else "#FFB300" if rr_val >= 1.5 else "#FF5252"

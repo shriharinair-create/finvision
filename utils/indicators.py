@@ -522,10 +522,24 @@ def compute_max_pain_and_oi_walls(ticker: str, current_price: float) -> dict[str
         max_pain_strike = float(all_strikes[min_pain_idx])
         gravity_pull = round(((max_pain_strike - current_price) / current_price) * 100.0, 2)
 
+        total_call_oi = float(calls["openInterest"].sum()) if "openInterest" in calls else 1.0
+        total_put_oi = float(puts["openInterest"].sum()) if "openInterest" in puts else 1.0
+        pcr = round(total_put_oi / max(1.0, total_call_oi), 2)
+        if pcr >= 1.25:
+            pcr_sentiment = "BULLISH_SUPPORT"
+        elif pcr <= 0.75:
+            pcr_sentiment = "BEARISH_RESISTANCE"
+        else:
+            pcr_sentiment = "BALANCED_NEUTRAL"
+
         return {
             "max_pain": max_pain_strike,
             "call_oi_wall": call_wall,
             "put_oi_wall": put_wall,
+            "pcr": pcr,
+            "pcr_sentiment": pcr_sentiment,
+            "total_call_oi": total_call_oi,
+            "total_put_oi": total_put_oi,
             "expiry_date": nearest_exp,
             "expiry_gravity_pull_pct": gravity_pull,
             "is_options_active": True
@@ -537,6 +551,8 @@ def compute_max_pain_and_oi_walls(ticker: str, current_price: float) -> dict[str
             "max_pain": approx_pain,
             "call_oi_wall": approx_pain + 2 * strike_step,
             "put_oi_wall": approx_pain - 2 * strike_step,
+            "pcr": 1.0,
+            "pcr_sentiment": "BALANCED_NEUTRAL",
             "expiry_gravity_pull_pct": round(((approx_pain - current_price) / current_price) * 100.0, 2),
             "is_options_active": False
         }
