@@ -138,34 +138,49 @@ def render_mode0():
         unsafe_allow_html=True
     )
 
-    # ── 🏛️ India Market Leaders & Benchmark Radar ───────────────────────────
+    # ── 🏛️ India Market Leaders & Benchmark Radar (Permanent Live Card) ────────
+    st.markdown(
+        """
+        <div style="background:#161B22; border:1px solid #21262D; border-radius:10px; padding:12px 14px 6px 14px; margin-bottom:10px;">
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+            <div style="font-size:13px; font-weight:700; color:#58A6FF; letter-spacing:0.5px;">
+              🏛️ INDIA MARKET LEADERS & BENCHMARKS
+            </div>
+            <div style="font-size:10px; color:#8B949E; background:#21262D; padding:2px 8px; border-radius:10px;">
+              Live Dalal Street Quotes
+            </div>
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+    c_ref_btn, c_auto_chk = st.columns([1, 1])
+    with c_ref_btn:
+        if st.button("🔄 Refresh Quotes Now", key="refresh_leaders_now", use_container_width=True):
+            get_india_market_leaders_quotes.clear()
+            st.toast("⚡ Fresh live Dalal Street quotes loaded!", icon="📈")
+            st.rerun()
+    with c_auto_chk:
+        auto_refresh = st.checkbox("⚡ Auto-refresh (30s)", value=False, key="auto_refresh_leaders_toggle")
+
+    now_str = datetime.datetime.now().strftime("%I:%M:%S %p")
+    if auto_refresh and st_autorefresh is not None:
+        st_autorefresh(interval=30000, limit=None, key="leaders_autorefresh_counter")
+        st.caption(f"🟢 **Live streaming active** · Auto-refreshing every 30s · Updated at {now_str}")
+    else:
+        st.caption(f"Quotes cached for 30s · Last updated at {now_str}")
+
     leaders_quotes = get_india_market_leaders_quotes()
-    with st.expander("🏛️ India Market Leaders & Benchmark Quotes (Live)", expanded=True):
-        c_ref_btn, c_auto_chk = st.columns([1, 1])
-        with c_ref_btn:
-            if st.button("🔄 Refresh Quotes Now", key="refresh_leaders_now", use_container_width=True):
-                get_india_market_leaders_quotes.clear()
-                st.toast("⚡ Fresh live Dalal Street quotes loaded!", icon="📈")
-                st.rerun()
-        with c_auto_chk:
-            auto_refresh = st.checkbox("⚡ Auto-refresh (30s)", value=False, key="auto_refresh_leaders_toggle")
-
-        now_str = datetime.datetime.now().strftime("%I:%M:%S %p")
-        if auto_refresh and st_autorefresh is not None:
-            st_autorefresh(interval=30000, limit=None, key="leaders_autorefresh_counter")
-            st.caption(f"🟢 **Live streaming active** · Auto-refreshing every 30s · Updated at {now_str}")
-        else:
-            st.caption(f"Quotes cached for 30s · Last updated at {now_str}")
-
-        for i in range(0, len(leaders_quotes), 2):
-            cols = st.columns(2)
-            for col_idx, item in enumerate(leaders_quotes[i:i+2]):
-                with cols[col_idx]:
-                    st.metric(
-                        label=f"{item['name']} ({item['symbol']})",
-                        value=f"₹{item['price']:,.2f}",
-                        delta=f"{item['change']:+.2f}%"
-                    )
+    for i in range(0, len(leaders_quotes), 2):
+        cols = st.columns(2)
+        for col_idx, item in enumerate(leaders_quotes[i:i+2]):
+            with cols[col_idx]:
+                st.metric(
+                    label=f"{item['name']} ({item['symbol']})",
+                    value=f"₹{item['price']:,.2f}",
+                    delta=f"{item['change']:+.2f}%"
+                )
+    st.markdown("<div style='margin-bottom:14px;'></div>", unsafe_allow_html=True)
 
     # ── Persona & Track Selector ──────────────────────────────────────────────
     c_track, c_budget, c_risk = st.columns([3, 2, 2])
