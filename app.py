@@ -77,6 +77,47 @@ if _sm:
     if isinstance(_first_value, list):
         st.session_state.sector_map = None
 
+mode_options = [
+    "🤖  Smart Copilot (0-Knowledge Autopilot)",
+    "📡  Market Scanner & Top 10 Alpha",
+    "🌱  Long-Term Wealth & Compounder Lab",
+    "⚡  Live Intraday Monitor",
+    "🔬  Forecast & Correlation Lab",
+    "🔍  Manual Ticker Analysis",
+    "🎓  AI Academy & Paper Trading",
+]
+
+target_mode = st.session_state.get("target_operating_mode")
+default_mode_index = 0
+if target_mode:
+    for idx, opt in enumerate(mode_options):
+        if target_mode.lower() in opt.lower():
+            default_mode_index = idx
+            break
+    del st.session_state["target_operating_mode"]
+elif "active_mode_index" in st.session_state:
+    default_mode_index = st.session_state["active_mode_index"]
+
+# ── 🧭 Top Navigation Bar (Prominently Visible on Both Mobile & PC) ──────────
+c_top_logo, c_top_sel = st.columns([1, 3])
+with c_top_logo:
+    st.markdown(
+        "<div style='font-size:20px;font-weight:800;color:#58A6FF;display:flex;align-items:center;gap:6px;padding-top:6px;'>"
+        "<span>📈</span><span>FinVision</span></div>",
+        unsafe_allow_html=True
+    )
+with c_top_sel:
+    mode = st.selectbox(
+        "Operating Mode",
+        options=mode_options,
+        index=default_mode_index,
+        key="top_bar_mode_select",
+        label_visibility="collapsed",
+        help="Switch between FinVision's 7 institutional modules"
+    )
+st.session_state["active_mode_index"] = mode_options.index(mode)
+st.markdown("<div style='margin-bottom:10px;'></div>", unsafe_allow_html=True)
+
 with st.sidebar:
     st.markdown(
         """
@@ -115,33 +156,6 @@ with st.sidebar:
 
     st.divider()
 
-    mode_options = [
-        "🤖  Smart Copilot (0-Knowledge Autopilot)",
-        "📡  Market Scanner & Top 10 Alpha",
-        "🌱  Long-Term Wealth & Compounder Lab",
-        "⚡  Live Intraday Monitor",
-        "🔬  Forecast & Correlation Lab",
-        "🔍  Manual Ticker Analysis",
-        "🎓  AI Academy & Paper Trading",
-    ]
-    
-    target_mode = st.session_state.get("target_operating_mode")
-    default_mode_index = 0
-    if target_mode:
-        for idx, opt in enumerate(mode_options):
-            if target_mode.lower() in opt.lower():
-                default_mode_index = idx
-                break
-        del st.session_state["target_operating_mode"]
-
-    mode = st.radio(
-        "Operating Mode",
-        options=mode_options,
-        index=default_mode_index,
-        label_visibility="collapsed",
-    )
-
-    st.divider()
     st.markdown("### Position Sizing & Budget")
     total_capital = st.number_input(
         "Trading Capital (₹)",
