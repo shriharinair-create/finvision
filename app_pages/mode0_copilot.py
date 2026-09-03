@@ -15,6 +15,10 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 import yfinance as yf
+try:
+    from streamlit_autorefresh import st_autorefresh
+except ImportError:
+    st_autorefresh = None
 
 from utils.forecasting import (
     compute_quantitative_confluence_forecast,
@@ -137,7 +141,22 @@ def render_mode0():
     # ── 🏛️ India Market Leaders & Benchmark Radar ───────────────────────────
     leaders_quotes = get_india_market_leaders_quotes()
     with st.expander("🏛️ India Market Leaders & Benchmark Quotes (Live)", expanded=True):
-        st.caption("Real-time streaming prices for Dalal Street benchmark indices and top market leaders.")
+        c_ref_btn, c_auto_chk = st.columns([1, 1])
+        with c_ref_btn:
+            if st.button("🔄 Refresh Quotes Now", key="refresh_leaders_now", use_container_width=True):
+                get_india_market_leaders_quotes.clear()
+                st.toast("⚡ Fresh live Dalal Street quotes loaded!", icon="📈")
+                st.rerun()
+        with c_auto_chk:
+            auto_refresh = st.checkbox("⚡ Auto-refresh (30s)", value=False, key="auto_refresh_leaders_toggle")
+
+        now_str = datetime.datetime.now().strftime("%I:%M:%S %p")
+        if auto_refresh and st_autorefresh is not None:
+            st_autorefresh(interval=30000, limit=None, key="leaders_autorefresh_counter")
+            st.caption(f"🟢 **Live streaming active** · Auto-refreshing every 30s · Updated at {now_str}")
+        else:
+            st.caption(f"Quotes cached for 30s · Last updated at {now_str}")
+
         for i in range(0, len(leaders_quotes), 2):
             cols = st.columns(2)
             for col_idx, item in enumerate(leaders_quotes[i:i+2]):
