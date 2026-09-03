@@ -58,12 +58,12 @@ def compute_position_size(
             "warning": "Invalid inputs — capital, risk %, and entry price must all be positive.",
         }
 
-    per_share_risk = entry_price - stop_price
-    if per_share_risk <= 0:
+    per_share_risk = abs(entry_price - stop_price)
+    if per_share_risk <= 0.001:
         return {
             "shares": 0, "cash_at_risk": 0.0, "position_value": 0.0,
             "position_pct_of_capital": 0.0, "capped_by_concentration_limit": False,
-            "warning": "Stop price must be below entry price for a long position — can't size risk.",
+            "warning": "Stop price must be different from entry price — can't size risk.",
         }
 
     cash_to_risk = total_capital * risk_pct

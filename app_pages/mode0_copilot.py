@@ -39,7 +39,9 @@ import textwrap
 
 RECOMMENDED_DAY_TICKERS = [
     "RELIANCE.NS", "TATAMOTORS.NS", "INFY.NS", "TCS.NS",
-    "HDFCBANK.NS", "ICICIBANK.NS", "BAJFINANCE.NS", "TITAN.NS"
+    "HDFCBANK.NS", "ICICIBANK.NS", "BAJFINANCE.NS", "TITAN.NS",
+    "BHARTIARTL.NS", "SUNPHARMA.NS", "ITC.NS", "LT.NS",
+    "AXISBANK.NS", "MARUTI.NS", "TATASTEEL.NS", "POWERGRID.NS"
 ]
 
 
@@ -386,18 +388,39 @@ def render_mode0():
             except Exception:
                 continue
 
-        # Sort setups by conviction
-        sorted_setups = sorted(setups, key=lambda x: x["conviction"], reverse=True)[:3]
+        # Prioritize actionable setups: Filter for approved setups with shares > 0 first!
+        actionable_setups = [s for s in setups if s["meta_eval"]["is_approved"] and s["shares"] > 0]
+        actionable_setups = sorted(
+            actionable_setups,
+            key=lambda x: (x["meta_eval"].get("meta_win_probability_pct", 0), x["conviction"]),
+            reverse=True
+        )
+
+        vetoed_setups = [s for s in setups if s not in actionable_setups]
+        vetoed_setups = sorted(vetoed_setups, key=lambda x: x["conviction"], reverse=True)
+
+        # Present actionable setups first so user gets usable trades!
+        sorted_setups = (actionable_setups + vetoed_setups)[:3]
 
         if not sorted_setups:
             st.info("Market data is refreshing. Click below to analyze setups.")
         else:
+            if actionable_setups:
+                st.caption(f"⚡ Showing **{min(len(actionable_setups), 3)} actionable setup(s)** with positive statistical edge (screened across {len(day_tickers_to_scan)} market leaders).")
+            else:
+                st.caption("🛡️ All standard long setups are currently paused by the AI Risk Gatekeeper to protect capital during this market correction.")
+
             for s_idx, s in enumerate(sorted_setups, start=1):
                 tick = s["ticker"]
-                est_profit_inr = round(s["shares"] * (s["target1"] - s["entry"]), 0)
+                is_short = "SELL" in s["action"].upper() or "SHORT" in s["action"].upper()
+                est_profit_inr = round(s["shares"] * abs(s["target1"] - s["entry"]), 0)
                 anti_sweep_badge = ""
                 if s.get("adaptive_stop_mult", 1.0) > 1.0:
                     anti_sweep_badge = f'<span style="background:#A371F722;color:#A371F7;border:1px solid #A371F744;padding:2px 8px;border-radius:12px;font-size:10px;font-weight:700;">🛡️ Anti-Sweep Stop ({s["adaptive_stop_mult"]}x ATR)</span>'
+
+                order_verb = "Short / Sell" if is_short else "Buy"
+                level1_lbl = "1. Short Limit Entry" if is_short else "1. Place Buy Limit"
+                level2_lbl = "2. Cover Target (Scalp)" if is_short else "2. Take Profit (Scalp)"
 
                 with st.container():
                     card_html_t1 = "\n".join([
@@ -418,13 +441,13 @@ def render_mode0():
                         f'<span style="font-size:11px;color:var(--amber);font-family:var(--mono);">Expected Inflection @ {esc(s["flip_time"])}</span>',
                         f'</div>',
                         f'<div class="top10-grid-levels">',
-                        f'<div class="level-item"><span class="level-label">1. Place Buy Limit</span><span class="level-val val-buy">₹{s["entry"]:,.2f}</span></div>',
-                        f'<div class="level-item"><span class="level-label">2. Take Profit (Scalp)</span><span class="level-val val-target">₹{s["target1"]:,.2f}</span></div>',
+                        f'<div class="level-item"><span class="level-label">{level1_lbl}</span><span class="level-val val-buy">₹{s["entry"]:,.2f}</span></div>',
+                        f'<div class="level-item"><span class="level-label">{level2_lbl}</span><span class="level-val val-target">₹{s["target1"]:,.2f}</span></div>',
                         f'<div class="level-item"><span class="level-label">3. Stop Loss</span><span class="level-val val-stop">₹{s["stop_loss"]:,.2f}</span></div>',
                         f'</div>',
                         f'<div class="top10-sizing-strip">',
                         f'<span>EXACT SIZED ORDER</span>',
-                        f'<span>Buy <strong>{s["shares"]:,} shares</strong> (₹{s["pos_val"]:,.0f} value) · Max Loss strictly capped at ₹{s["risk_val"]:,.0f} ({s["meta_eval"]["bet_sizing_factor"]}x sizing)</span>',
+                        f'<span>{order_verb} <strong>{s["shares"]:,} shares</strong> (₹{s["pos_val"]:,.0f} value) · Max Loss strictly capped at ₹{s["risk_val"]:,.0f} ({s["meta_eval"]["bet_sizing_factor"]}x sizing)</span>',
                         f'</div>',
                         f'</div>'
                     ])
