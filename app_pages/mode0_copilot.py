@@ -42,6 +42,8 @@ from utils.broker_gateway import build_broker_order_payload, dispatch_broker_ord
 from utils.ml_ensemble import retrain_ensemble_from_trade_journal
 from utils.bse_helper import resolve_indian_ticker, is_bse_scrip_code
 from utils.bse_corporate import check_corporate_event_risk
+from utils.indian_macro import fetch_official_indian_macro, compute_indian_fci
+from utils.adaptive_weights import get_regime_adaptive_weights, calculate_adaptive_confluence_score
 import textwrap
 
 
@@ -152,6 +154,15 @@ def render_mode0():
     cross_verdict = market_regime.get("cross_exchange_verdict", "CONFIRMED_NSE_BSE_ALIGNMENT")
     cross_color = "#3FB950" if cross_verdict == "CONFIRMED_NSE_BSE_ALIGNMENT" else "#FFB300"
 
+    macro_econ = fetch_official_indian_macro()
+    fci_data = compute_indian_fci(
+        repo_rate=macro_econ.get("policy_repo_rate", 6.50),
+        cpi_inflation=macro_econ.get("cpi_inflation_pct", 5.08),
+        gdp_growth=macro_econ.get("gdp_growth_pct", 6.70),
+        crude_oil_price=crude.get("price", 78.5),
+        usdinr_exchange_rate=usdinr.get("price", 87.25),
+    )
+
     st.markdown(
         textwrap.dedent(f"""
         <div style="background:#161B22; border:1px solid #30363D; border-radius:8px; padding:12px 16px; margin:14px 0;">
@@ -186,6 +197,19 @@ def render_mode0():
               </span>
               <span style="font-size:10px; font-weight:800; background:#21262D; padding:2px 8px; border-radius:10px; color:#58A6FF;">
                 {macro_baro['macro_badge']}
+              </span>
+            </div>
+          </div>
+          <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; margin-top:6px; border-top:1px dashed #21262D; padding-top:6px;">
+            <div style="font-size:11px; color:#8B949E;">
+              🇮🇳 <strong>Indian Economic Engine:</strong> 
+              RBI Repo: <strong>{macro_econ['policy_repo_rate']}%</strong> · 
+              CPI Inflation: <strong>{macro_econ['cpi_inflation_pct']}%</strong> · 
+              Real GDP: <strong>{macro_econ['gdp_growth_pct']}%</strong> (YoY)
+            </div>
+            <div style="display:flex; gap:6px; align-items:center;">
+              <span style="font-size:10px; font-weight:800; background:#21262D; padding:2px 8px; border-radius:10px; color:{fci_data['badge_color']};">
+                {fci_data['fci_badge']}
               </span>
             </div>
           </div>
@@ -564,6 +588,15 @@ def render_mode0():
                 if bse_event.get("has_imminent_event"):
                     bse_event_badge = f'<span style="background:#F8514922;color:#F85149;border:1px solid #F8514944;padding:2px 8px;border-radius:12px;font-size:10px;font-weight:700;">{bse_event["warning_badge"]}</span>'
 
+                adaptive_res = calculate_adaptive_confluence_score(
+                    trend_score=0.85 if "BULL" in s["bias"].upper() else 0.35,
+                    momentum_score=s["conviction"],
+                    sr_score=0.80,
+                    volume_score=0.75,
+                    news_score=0.60,
+                    regime_name=market_regime.get("regime_name", "BULL_MARKUP")
+                )
+
                 with st.container():
                     card_html_t1 = "\n".join([
                         f'<div class="top10-card" style="border-left: 4px solid #58A6FF;margin-bottom:18px;">',
@@ -601,6 +634,10 @@ def render_mode0():
                         f'<span>📉 <strong>1D 95% VaR:</strong> ₹{s["var_inr"]:,.0f} (CVaR Tail Loss: ₹{s["cvar_inr"]:,.0f})</span>',
                         f'<span style="color:#58A6FF; font-weight:700;">{s["ml_badge"]}</span>',
                         f'<span style="color:#8B949E; font-size:10px;">⚖️ {s["regime_mode"]}</span>',
+                        f'</div>',
+                        f'<div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:6px; font-size:10px; color:#8B949E; padding:4px 8px; margin-top:4px; border-top:1px dashed #21262D;">',
+                        f'<span>🎯 <strong>Adaptive Weights:</strong> {adaptive_res["weight_summary"]}</span>',
+                        f'<span style="color:#58A6FF;">Key Edge: <strong>{adaptive_res["dominant_factor"]}</strong></span>',
                         f'</div>',
                         f'</div>'
                     ])

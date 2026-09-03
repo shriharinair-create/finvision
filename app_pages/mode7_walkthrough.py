@@ -153,6 +153,28 @@ def render_mode7():
                 """)
             )
 
+        with st.expander("4. 🇮🇳 Official Indian Macro Economic Feed & Financial Conditions Index (FCI)", expanded=True):
+            st.markdown(
+                textwrap.dedent("""
+                FinVision bridges real-time macro indicators from official RBI and MoSPI data releases:
+                * **RBI Policy Repo Rate (6.50%)**: Baseline benchmark rate determining system-wide liquidity cost.
+                * **India CPI Inflation (5.08%)**: Evaluated against RBI's 4.0% midpoint target to gauge real interest rates.
+                * **Real GDP Growth (6.70%)**: Underpins corporate earnings expansion.
+                * **Indian Financial Conditions Index (FCI)**: Synthesizes rates, inflation, crude oil, and USD/INR into a single macro risk badge (`🟢 Expansive`, `⚪ Balanced`, `🟡 Restrictive`, `🔴 Severe Drag`).
+                """)
+            )
+
+        with st.expander("5. 🎯 Dynamic Regime-Adaptive Confluence Weighting Engine", expanded=True):
+            st.markdown(
+                textwrap.dedent("""
+                No more static, fixed indicator weights. FinVision dynamically evolves its 6-factor confluence matrix based on the active market regime:
+                * **🟢 Bull Markup**: Trend (35%) and Momentum (30%) dominate — buy breakouts and ride EMA hierarchies.
+                * **⚠️ High Volatility Chop**: Support/Resistance Mean Reversion (40%) and Oversold Oscillators (30%) dominate; Trend is slashed to 10% to prevent whipsaws.
+                * **🔴 Bear Markdown**: Overhead Resistance Supply (35%) and Volatility Bands (25%) dominate — protect capital.
+                * **⚪ Consolidation Base**: Volume Accumulation (30%) and Range Boundaries (25%) dominate — identify coiling spring setups before the explosion.
+                """)
+            )
+
     # ── TAB 3: BSE & Dual-Exchange ────────────────────────────────────────────
     with tabs[2]:
         st.markdown("### 🏛️ First-Class BSE (Bombay Stock Exchange) Support")
