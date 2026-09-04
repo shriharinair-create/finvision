@@ -578,7 +578,20 @@ def auto_trader_background_loop(poll_interval: int = 180):
             if cfg.get("is_enabled", False):
                 budget = float(cfg.get("allocated_budget", 100000.0))
                 risk = float(cfg.get("risk_pct_per_trade", 0.01))
-                run_auto_trade_cycle(user_budget=budget, risk_pct=risk)
+                cycle_res = run_auto_trade_cycle(user_budget=budget, risk_pct=risk)
+                # Broadcast latest state to cloud relay
+                try:
+                    from utils.cross_device_sync import push_sync_to_cloud_async
+                    push_sync_to_cloud_async()
+                except Exception:
+                    pass
+            else:
+                # If locally paused, check if other device enabled it or made changes
+                try:
+                    from utils.cross_device_sync import pull_and_apply_cloud_sync
+                    pull_and_apply_cloud_sync()
+                except Exception:
+                    pass
         except Exception as e:
             logger.debug(f"Auto-trader background cycle notice: {e}")
 

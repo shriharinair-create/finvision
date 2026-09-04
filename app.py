@@ -58,6 +58,17 @@ try:
 except Exception:
     pass
 
+# ── 🔄 Cross-Device State Sync (Transfers settings & trade status on open) ───
+if "cross_device_synced" not in st.session_state:
+    try:
+        from utils.cross_device_sync import pull_and_apply_cloud_sync
+        sync_res = pull_and_apply_cloud_sync()
+        st.session_state["cross_device_synced"] = True
+        if sync_res.get("status") == "SUCCESS":
+            st.toast(f"🔄 Synced settings & trade status from {sync_res.get('source_device', 'other device')}!", icon="🔄")
+    except Exception:
+        st.session_state["cross_device_synced"] = True
+
 if "news_auto_synced" not in st.session_state:
     try:
         new_docs = ingest_live_news()

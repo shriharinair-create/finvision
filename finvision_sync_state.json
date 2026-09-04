@@ -1,0 +1,47 @@
+{
+  "version": "1.0",
+  "exported_at": "2026-09-04T13:39:27Z",
+  "source_device": "PC",
+  "auto_trader_config": {
+    "id": 1,
+    "is_enabled": true,
+    "execution_mode": "SIMULATION",
+    "enabled_horizons": "DAY_TRADE",
+    "max_concurrent_positions": 3,
+    "risk_pct_per_trade": 0.005,
+    "allocated_budget": 20000.0,
+    "selected_broker": "Zerodha Kite",
+    "broker_webhook_url": "",
+    "updated_at": "2026-09-04 02:56:44"
+  },
+  "active_auto_trades": [],
+  "recent_paper_trades": [
+    {
+      "id": 1,
+      "timestamp": "2026-08-29 13:27:22",
+      "ticker": "RELIANCE.NS",
+      "trade_type": "BUY_INTRADAY",
+      "entry_price": 2500.0,
+      "target_price": 2550.0,
+      "stop_loss_price": 2475.0,
+      "shares": 20,
+      "position_value": 50000.0,
+      "status": "TARGET_HIT",
+      "exit_price": 2550.0,
+      "exit_timestamp": "2026-08-29 13:27:22",
+      "pnl_amount": 1000.0,
+      "pnl_pct": 2.0,
+      "notes": "Test trade [TARGET_HIT]",
+      "is_auto_trade": 0,
+      "execution_mode": "SIMULATION",
+      "horizon": "DAY_TRADE"
+    }
+  ],
+  "learnings": [],
+  "user_preferences": {
+    "total_capital": 20000.0,
+    "risk_profile": "Conservative (0.5% max risk)",
+    "risk_pct": 0.01,
+    "trading_goal_index": 0
+  }
+}

@@ -235,8 +235,8 @@ def render_mode0():
             help="Maximum capital risked on any individual trade."
         )
 
-    # 3. Quick Engine Controls (Master Switch & Trigger Button)
-    c_ctrl1, c_ctrl2 = st.columns([1, 1])
+    # 3. Quick Engine Controls (Master Switch, Trigger Button, Cross-Device Sync)
+    c_ctrl1, c_ctrl2, c_ctrl3 = st.columns([1.2, 1.4, 1.2])
     with c_ctrl1:
         t_master = st.toggle(
             "⚡ Auto-Trade Engine Master Switch",
@@ -247,7 +247,12 @@ def render_mode0():
         if t_master != is_at_active:
             auto_cfg["is_enabled"] = t_master
             save_auto_trader_config(auto_cfg)
-            st.toast(f"Auto-Trader {'activated' if t_master else 'paused'}.", icon="🤖")
+            try:
+                from utils.cross_device_sync import push_sync_to_cloud_async
+                push_sync_to_cloud_async()
+            except Exception:
+                pass
+            st.toast(f"Auto-Trader {'activated' if t_master else 'paused'} and synced to cloud.", icon="🤖")
             st.rerun()
     with c_ctrl2:
         if st.button("🔄 Trigger Auto-Trade Scan Cycle Now", key="btn_run_at_cycle_hero", use_container_width=True):
@@ -259,6 +264,22 @@ def render_mode0():
                 st.success(f"🎯 Cycle Complete: {num_entered} new trade(s) entered, {num_closed} position(s) exited & diagnosed.")
             else:
                 st.info("ℹ️ Auto-Trade scan complete: Positions monitored, no new trade triggered (within risk/conviction thresholds).")
+            try:
+                from utils.cross_device_sync import push_sync_to_cloud_async
+                push_sync_to_cloud_async()
+            except Exception:
+                pass
+            st.rerun()
+    with c_ctrl3:
+        if st.button("☁️ Sync PC & Mobile Now", key="btn_cross_device_sync_cockpit", use_container_width=True, help="Transfers trade status, active positions, and configuration across PC and Mobile devices."):
+            with st.spinner("🔄 Synchronizing state with cloud relay..."):
+                try:
+                    from utils.cross_device_sync import pull_and_apply_cloud_sync, push_sync_to_cloud_async
+                    push_sync_to_cloud_async()
+                    sync_res = pull_and_apply_cloud_sync()
+                    st.toast(f"✅ {sync_res.get('message', 'State synchronized.')}", icon="☁️")
+                except Exception as ex_sync:
+                    st.toast(f"Sync note: {ex_sync}", icon="ℹ️")
             st.rerun()
 
     # 4. Live Scanner Radar & Active Positions Feed (Directly visible without expander)
@@ -423,7 +444,12 @@ def render_mode0():
             or wb_url_val != auto_cfg.get("broker_webhook_url")
         ):
             save_auto_trader_config(new_cfg)
-            st.toast("💾 Auto-Trader settings updated and saved!", icon="🤖")
+            try:
+                from utils.cross_device_sync import push_sync_to_cloud_async
+                push_sync_to_cloud_async()
+            except Exception:
+                pass
+            st.toast("💾 Auto-Trader settings updated and synced to cloud!", icon="🤖")
             st.rerun()
 
         # ── 🧠 Auto-Trader Brain & Learning Feed ("What Went Right vs Mistakes Made") ──

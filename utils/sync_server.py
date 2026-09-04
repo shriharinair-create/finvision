@@ -64,6 +64,16 @@ class FinVisionSyncHandler(BaseHTTPRequestHandler):
             self._set_headers(200)
             self.wfile.write(json.dumps({"trades": trades}).encode("utf-8"))
 
+        elif self.path == "/api/sync_state":
+            try:
+                from utils.cross_device_sync import export_sync_payload
+                state_data = export_sync_payload()
+                self._set_headers(200)
+                self.wfile.write(json.dumps(state_data).encode("utf-8"))
+            except Exception as e:
+                self._set_headers(500)
+                self.wfile.write(json.dumps({"error": str(e)}).encode("utf-8"))
+
         else:
             self._set_headers(404)
             self.wfile.write(b'{"error": "Endpoint not found"}')
@@ -75,6 +85,18 @@ class FinVisionSyncHandler(BaseHTTPRequestHandler):
             try:
                 payload = json.loads(body.decode("utf-8"))
                 result = self._process_incoming_sync(payload)
+                self._set_headers(200)
+                self.wfile.write(json.dumps(result).encode("utf-8"))
+            except Exception as e:
+                self._set_headers(400)
+                self.wfile.write(json.dumps({"error": str(e)}).encode("utf-8"))
+        elif self.path == "/api/sync_state":
+            content_length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(content_length)
+            try:
+                payload = json.loads(body.decode("utf-8"))
+                from utils.cross_device_sync import apply_sync_payload
+                result = apply_sync_payload(payload)
                 self._set_headers(200)
                 self.wfile.write(json.dumps(result).encode("utf-8"))
             except Exception as e:
