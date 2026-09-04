@@ -27,6 +27,8 @@ Features:
 from __future__ import annotations
 import datetime
 import logging
+import threading
+import time
 from typing import Any, Dict, List, Optional
 import numpy as np
 import pandas as pd
@@ -543,3 +545,49 @@ def run_auto_trade_cycle(
         "learnings": recent_learnings,
         "market_timing": is_indian_market_open_or_simulated(),
     }
+
+
+# ── 4. AUTONOMOUS BACKGROUND DAEMON ───────────────────────────────────────────
+
+_auto_trader_thread: threading.Thread | None = None
+_auto_trader_stop_event = threading.Event()
+
+
+def auto_trader_background_loop(poll_interval: int = 180):
+    """
+    Continuous background loop that monitors active positions and executes
+    scans when the auto-trader is enabled. Runs without blocking the web UI.
+    """
+    logger.info("FinVision Auto-Trader background daemon started.")
+    # Initial pause to let server startup settle
+    time.sleep(5)
+    while not _auto_trader_stop_event.is_set():
+        try:
+            cfg = get_auto_trader_config()
+            if cfg.get("is_enabled", False):
+                budget = float(cfg.get("allocated_budget", 100000.0))
+                risk = float(cfg.get("risk_pct_per_trade", 0.01))
+                run_auto_trade_cycle(user_budget=budget, risk_pct=risk)
+        except Exception as e:
+            logger.debug(f"Auto-trader background cycle notice: {e}")
+
+        _auto_trader_stop_event.wait(poll_interval)
+
+
+def start_auto_trader_daemon(poll_interval: int = 180) -> bool:
+    """
+    Spawns the auto-trader background daemon thread if not already running.
+    Safe to call multiple times (idempotent).
+    """
+    global _auto_trader_thread
+    if _auto_trader_thread is not None and _auto_trader_thread.is_alive():
+        return True
+
+    _auto_trader_thread = threading.Thread(
+        target=auto_trader_background_loop,
+        args=(poll_interval,),
+        daemon=True,
+        name="FinVision-AutoTrader-Daemon"
+    )
+    _auto_trader_thread.start()
+    return True

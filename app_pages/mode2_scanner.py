@@ -168,7 +168,7 @@ def _normalize_ticker(symbol: str) -> str:
 def render_mode2(watchlist: list[str], watchlist_status: str):
     # ── 📡 Auto-Trader Live Scanner Telemetry Strip ───────────────────────────
     try:
-        from utils.database import get_auto_trader_config, get_active_auto_trades
+        from utils.market_store import get_auto_trader_config, get_active_auto_trades
         _at_cfg = get_auto_trader_config()
         _is_on = _at_cfg.get("is_enabled", False)
         _active_pos = get_active_auto_trades()

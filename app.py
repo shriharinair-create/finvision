@@ -52,6 +52,12 @@ try:
 except Exception:
     pass
 
+try:
+    from utils.auto_trader import start_auto_trader_daemon
+    start_auto_trader_daemon(poll_interval=180)
+except Exception:
+    pass
+
 if "news_auto_synced" not in st.session_state:
     try:
         new_docs = ingest_live_news()
