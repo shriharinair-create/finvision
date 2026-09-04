@@ -455,6 +455,27 @@ def render_mode0():
                 key="slider_at_max_pos_cfg",
             )
 
+        # Stock Selection Strategy (Way 1: Full AI Radar vs Way 2: Custom Watchlist)
+        c_ss1, c_ss2 = st.columns([1.2, 1.8])
+        cur_wl = auto_cfg.get("custom_watchlist", "")
+        with c_ss1:
+            stock_source_mode = st.radio(
+                "Stock Selection Strategy",
+                options=["🤖 Full AI Autopilot (Nifty 500 Radar)", "🎯 Custom Watchlist (My Stocks Only)"],
+                index=0 if not cur_wl else 1,
+                key="radio_stock_selection_mode",
+                help="Full AI Autopilot lets the bot pick top setups across Dalal Street. Custom Watchlist restricts autonomous trading strictly to stocks you specify."
+            )
+        with c_ss2:
+            new_custom_wl = ""
+            if "Custom" in stock_source_mode:
+                new_custom_wl = st.text_input(
+                    "Target Stock Tickers (Comma separated)",
+                    value=cur_wl if cur_wl else "TATAMOTORS, INFY, RELIANCE, HDFCBANK",
+                    key="input_custom_watchlist_tickers",
+                    help="Enter NSE tickers without .NS (e.g. TATAMOTORS, INFY, ITC, SBIN). The Auto-Trader will only scan and trade these specific stocks."
+                ).strip().upper()
+
         # Live Broker Details
         sel_brk = auto_cfg.get("selected_broker", "Zerodha Kite")
         wb_url_val = auto_cfg.get("broker_webhook_url", "")
@@ -485,6 +506,7 @@ def render_mode0():
             "allocated_budget": top_budget,
             "selected_broker": sel_brk,
             "broker_webhook_url": wb_url_val,
+            "custom_watchlist": new_custom_wl,
         }
 
         if (
@@ -493,6 +515,7 @@ def render_mode0():
             or new_max_pos != max_pos
             or sel_brk != auto_cfg.get("selected_broker")
             or wb_url_val != auto_cfg.get("broker_webhook_url")
+            or new_custom_wl != auto_cfg.get("custom_watchlist", "")
         ):
             save_auto_trader_config(new_cfg)
             try:
@@ -502,6 +525,59 @@ def render_mode0():
                 pass
             st.toast("💾 Auto-Trader settings updated and synced to cloud!", icon="🤖")
             st.rerun()
+
+    # 5B. Custom Bracket Order Queue (Way 3: Custom Stock, Entry, Target & SL)
+    with st.expander("⚡ Queue Custom Bracket Order (Exact Entry, Target & Stop Loss)", expanded=False):
+        st.caption("Provide your exact stock, entry, target, and stop loss. The Auto-Trader daemon will monitor live market ticks and execute automatically when triggered.")
+        with st.form("form_queue_custom_bracket"):
+            q_col1, q_col2, q_col3 = st.columns([1.5, 1, 1])
+            with q_col1:
+                q_tick = st.text_input("Stock Ticker", value="TATAMOTORS.NS", help="NSE ticker e.g. TATAMOTORS.NS or RELIANCE.NS").strip().upper()
+            with q_col2:
+                q_type = st.selectbox("Action", ["BUY (Long)", "SHORT (Intraday)"])
+            with q_col3:
+                q_horizon = st.selectbox("Horizon", ["Day Trade (MIS)", "Swing Trade (CNC)"])
+
+            q_p1, q_p2, q_p3, q_p4 = st.columns(4)
+            with q_p1:
+                q_entry = st.number_input("Entry Price (₹)", min_value=1.0, value=980.0, step=0.5)
+            with q_p2:
+                q_target = st.number_input("Target Price (₹)", min_value=1.0, value=1020.0, step=0.5)
+            with q_p3:
+                q_stop = st.number_input("Stop Loss (₹)", min_value=1.0, value=960.0, step=0.5)
+            with q_p4:
+                def_risk_amt = top_budget * top_risk_pct
+                risk_per_share = max(1.0, abs(q_entry - q_stop))
+                calc_shares = max(1, int(def_risk_amt / risk_per_share))
+                q_shares = st.number_input("Quantity (Shares)", min_value=1, value=calc_shares, step=1, help=f"Auto-calculated for 1% risk (₹{def_risk_amt:,.0f})")
+
+            q_submit = st.form_submit_button("🚀 Submit to Auto-Trader Queue", use_container_width=True)
+            if q_submit:
+                t_type_val = "BUY_INTRADAY" if "Day" in q_horizon else "BUY_LONGTERM"
+                if "SHORT" in q_type:
+                    t_type_val = "SHORT"
+                h_val = "DAY_TRADE" if "Day" in q_horizon else "SWING_TRADE"
+
+                clean_ticker = q_tick if (q_tick.endswith('.NS') or q_tick.endswith('.BO')) else f"{q_tick}.NS"
+                tid = log_paper_trade(
+                    ticker=clean_ticker,
+                    trade_type=t_type_val,
+                    entry_price=q_entry,
+                    target_price=q_target,
+                    stop_loss_price=q_stop,
+                    shares=q_shares,
+                    notes="User-Defined Bracket Order | Managed by Auto-Trader Daemon",
+                    is_auto_trade=1,
+                    execution_mode=cur_mode,
+                    horizon=h_val,
+                )
+                try:
+                    from utils.cross_device_sync import push_sync_to_cloud_async
+                    push_sync_to_cloud_async()
+                except Exception:
+                    pass
+                st.success(f"✅ Bracket Order #{tid} queued for {clean_ticker}! Auto-Trader daemon is now monitoring.")
+                st.rerun()
 
         # ── 🧠 Auto-Trader Brain & Learning Feed ("What Went Right vs Mistakes Made") ──
         with st.expander("🧠 Auto-Trader Brain Activity & Continuous Self-Learning Feed", expanded=bool(recent_auto_learnings)):

@@ -97,16 +97,32 @@ def scan_multi_horizon_candidates(
     risk_pct: float,
     enabled_horizons: list[str],
     current_open_tickers: list[str],
+    custom_tickers: Optional[list[str]] = None,
 ) -> list[dict[str, Any]]:
     """
     Scans candidate universes across Day Trade, Swing Trade, and Long-Term Compounding.
     Enforces strict Lopez de Prado meta-labeling, anti-sweep buffers, and 1% risk sizing.
+    If custom_tickers are provided, restricts candidate discovery to that watchlist.
     """
     candidates = []
 
+    # Format custom tickers if provided
+    formatted_custom = []
+    if custom_tickers:
+        for ct in custom_tickers:
+            ct_clean = ct.strip().upper()
+            if not ct_clean:
+                continue
+            if not (ct_clean.endswith(".NS") or ct_clean.endswith(".BO")):
+                ct_clean = f"{ct_clean}.NS"
+            formatted_custom.append(ct_clean)
+
     # ── A. DAY TRADING (⚡ 15m Momentum / Breakout) ───────────────────────────
     if "DAY_TRADE" in enabled_horizons:
-        day_pool = [t for t in DAY_UNIVERSE if t not in current_open_tickers][:6]
+        if formatted_custom:
+            day_pool = [t for t in formatted_custom if t not in current_open_tickers][:10]
+        else:
+            day_pool = [t for t in DAY_UNIVERSE if t not in current_open_tickers][:6]
         if day_pool:
             try:
                 hist_data = yf.download(day_pool, period="10d", interval="15m", progress=False)
@@ -200,7 +216,10 @@ def scan_multi_horizon_candidates(
 
     # ── B. MULTI-DAY SWING TRADING (🔭 Trend Pullback & Wyckoff) ───────────────
     if "SWING_TRADE" in enabled_horizons:
-        swing_pool = [t for t in SWING_UNIVERSE if t not in current_open_tickers][:5]
+        if formatted_custom:
+            swing_pool = [t for t in formatted_custom if t not in current_open_tickers][:10]
+        else:
+            swing_pool = [t for t in SWING_UNIVERSE if t not in current_open_tickers][:5]
         for tick in swing_pool:
             try:
                 # Corporate event risk blackout check
@@ -476,11 +495,14 @@ def run_auto_trade_cycle(
 
         if slots_available > 0:
             current_tickers = [t["ticker"] for t in active_now]
+            raw_wl = cfg.get("custom_watchlist", "")
+            custom_list = [x.strip() for x in raw_wl.split(",") if x.strip()] if raw_wl else None
             candidates = scan_multi_horizon_candidates(
                 budget=user_budget,
                 risk_pct=risk_pct,
                 enabled_horizons=enabled_horizons,
                 current_open_tickers=current_tickers,
+                custom_tickers=custom_list,
             )
 
             for cand in candidates[:slots_available]:

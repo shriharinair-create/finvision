@@ -217,6 +217,11 @@ def init_db() -> None:
             VALUES (1, 0, 'SIMULATION', 'DAY_TRADE,SWING_TRADE,LONG_TERM', 3, 0.01, 100000.0, 'Zerodha Kite', '')
         """)
 
+        try:
+            cursor.execute("ALTER TABLE auto_trader_settings ADD COLUMN custom_watchlist TEXT DEFAULT ''")
+        except Exception:
+            pass
+
         # 11. Autonomous Auto-Trader Learning & Autopsy Feed
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS auto_trader_learnings (
@@ -775,9 +780,11 @@ def get_auto_trader_config() -> dict[str, Any]:
                 "allocated_budget": 100000.0,
                 "selected_broker": "Zerodha Kite",
                 "broker_webhook_url": "",
+                "custom_watchlist": "",
             }
         d = dict(row)
         d["is_enabled"] = bool(d.get("is_enabled", 0))
+        d.setdefault("custom_watchlist", "")
         return d
 
 
@@ -789,8 +796,8 @@ def save_auto_trader_config(config: dict[str, Any]) -> bool:
             INSERT INTO auto_trader_settings (
                 id, is_enabled, execution_mode, enabled_horizons,
                 max_concurrent_positions, risk_pct_per_trade, allocated_budget,
-                selected_broker, broker_webhook_url, updated_at
-            ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                selected_broker, broker_webhook_url, custom_watchlist, updated_at
+            ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
             ON CONFLICT(id) DO UPDATE SET
                 is_enabled = excluded.is_enabled,
                 execution_mode = excluded.execution_mode,
@@ -800,6 +807,7 @@ def save_auto_trader_config(config: dict[str, Any]) -> bool:
                 allocated_budget = excluded.allocated_budget,
                 selected_broker = excluded.selected_broker,
                 broker_webhook_url = excluded.broker_webhook_url,
+                custom_watchlist = excluded.custom_watchlist,
                 updated_at = CURRENT_TIMESTAMP
         """, (
             1 if config.get("is_enabled", False) else 0,
@@ -810,6 +818,7 @@ def save_auto_trader_config(config: dict[str, Any]) -> bool:
             float(config.get("allocated_budget", 100000.0)),
             config.get("selected_broker", "Zerodha Kite"),
             config.get("broker_webhook_url", ""),
+            config.get("custom_watchlist", ""),
         ))
         conn.commit()
         return True
