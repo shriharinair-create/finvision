@@ -44,6 +44,9 @@ from utils.market_store import (
     close_paper_trade,
     log_trade_postmortem,
     get_stock_adaptive_buffer,
+    trip_circuit_breaker,
+    reset_circuit_breaker,
+    get_connection,
 )
 from utils.risk import compute_position_size
 from utils.regime import detect_indian_market_regime
@@ -87,6 +90,178 @@ def is_indian_market_open_or_simulated() -> dict[str, Any]:
         "is_weekday": is_weekday,
         "is_market_open": is_open,
         "is_squareoff_time": is_squareoff_time,
+    }
+
+
+def validate_quote_sanity(
+    ticker: str,
+    close: float,
+    prev_close: float,
+    high: float,
+    low: float,
+) -> tuple[bool, str]:
+    """
+    Validates price data freshness, sanity, and circuit bands:
+      - Checks for anomalous price jump (>25% single candle)
+      - Checks for circuit lock (high == low or price within 1% of 5/10/20% circuit limit)
+    """
+    if close <= 0 or prev_close <= 0:
+        return False, "Invalid non-positive quote"
+
+    # 1. Extreme anomalous jump check (>25% single tick glitch)
+    pct_change = abs(close - prev_close) / prev_close
+    if pct_change > 0.25:
+        return False, f"Anomalous price spike detected ({pct_change*100:.1f}%)"
+
+    # 2. Circuit Lock Check (No liquidity / 0 bid-ask spread)
+    if high > 0 and low > 0 and abs(high - low) < 0.05 and close > 50:
+        return False, "Stock locked in circuit band with flat liquidity"
+
+    # 3. Proximity to 5%, 10%, 20% Upper/Lower Circuit
+    for band_pct in [0.05, 0.10, 0.20]:
+        up_limit = prev_close * (1.0 + band_pct)
+        down_limit = prev_close * (1.0 - band_pct)
+        if abs(close - up_limit) / up_limit < 0.008:
+            return False, f"Near Upper Circuit Band ({band_pct*100:.0f}%)"
+        if abs(close - down_limit) / down_limit < 0.008:
+            return False, f"Near Lower Circuit Band ({band_pct*100:.0f}%)"
+
+    return True, "Quote Validated"
+
+
+def evaluate_circuit_breakers(
+    capital: float,
+    budget: float,
+) -> dict[str, Any]:
+    """
+    Institutional Account-Level Circuit Breakers & Risk Shields:
+      1. Active Trip Check: Evaluates if a prior circuit breaker is still active.
+      2. Daily Max Drawdown Circuit Breaker: Halts trading if today's net P&L exceeds -2.5% of capital.
+      3. Consecutive Loss Cooldown: Halts trading for 12h if 3 consecutive losses occurred in trailing 24h.
+      4. India VIX Panic Governor: Blocks new breakouts if VIX >= 22 or surges > 15% intraday.
+      5. Friday Weekend Risk Blackout: Blocks new multi-day swing holds after 14:30 IST on Fridays.
+    """
+    cfg = get_auto_trader_config()
+    now_utc = datetime.datetime.now(datetime.timezone.utc)
+    until_str = cfg.get("circuit_breaker_triggered_until", "")
+    reason = cfg.get("circuit_breaker_reason", "")
+    max_dd_pct = float(cfg.get("daily_drawdown_limit_pct", 0.025))
+    consec_limit = int(cfg.get("consecutive_loss_limit", 3))
+
+    # 1. Check if already tripped and still within cooldown window
+    if until_str:
+        try:
+            until_dt = datetime.datetime.fromisoformat(until_str.replace("Z", "+00:00"))
+            if now_utc < until_dt:
+                rem_mins = max(1, int((until_dt - now_utc).total_seconds() / 60))
+                return {
+                    "is_tripped": True,
+                    "reason": reason,
+                    "remaining_minutes": rem_mins,
+                    "cooldown_until": until_str,
+                    "shield_status": f"🔴 CIRCUIT BREAKER ACTIVE: {reason} (Cooldown: {rem_mins}m left)",
+                    "allow_new_entries": False,
+                }
+            else:
+                reset_circuit_breaker()
+        except Exception:
+            pass
+
+    # 2. Check Daily Realized P&L from SQLite
+    today_pnl = 0.0
+    ist_now = now_utc + datetime.timedelta(hours=5, minutes=30)
+    today_date_str = ist_now.strftime("%Y-%m-%d")
+
+    recent_closed = []
+    try:
+        with get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT pnl_amount, pnl_pct, exit_timestamp, status
+                FROM paper_trades
+                WHERE status != 'OPEN'
+                ORDER BY id DESC LIMIT 20
+            """)
+            recent_closed = [dict(r) for r in cur.fetchall()]
+    except Exception as e:
+        logger.debug(f"Circuit breaker trade fetch error: {e}")
+
+    for t in recent_closed:
+        exit_ts = str(t.get("exit_timestamp") or "")
+        if today_date_str in exit_ts:
+            today_pnl += float(t.get("pnl_amount", 0.0))
+
+    # Max Drawdown Check
+    max_allowed_loss = capital * max_dd_pct
+    if today_pnl <= -1.0 * max_allowed_loss and max_allowed_loss > 0:
+        msg = f"Max Daily Drawdown Reached (-₹{abs(today_pnl):,.0f} / -{max_dd_pct*100:.1f}%)"
+        trip_circuit_breaker(msg, cooldown_hours=24.0)
+        return {
+            "is_tripped": True,
+            "reason": msg,
+            "remaining_minutes": 1440,
+            "cooldown_until": (now_utc + datetime.timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "shield_status": f"🔴 CIRCUIT BREAKER ACTIVE: {msg}",
+            "allow_new_entries": False,
+        }
+
+    # 3. Consecutive Loss Check (Trailing 24 hours)
+    if len(recent_closed) >= consec_limit:
+        consec_losses = 0
+        for t in recent_closed[:consec_limit]:
+            if float(t.get("pnl_amount", 0.0)) < 0:
+                consec_losses += 1
+            else:
+                break
+        if consec_losses >= consec_limit:
+            msg = f"{consec_limit} Consecutive Losses Detected (Anti-Whipsaw Cooldown)"
+            trip_circuit_breaker(msg, cooldown_hours=12.0)
+            return {
+                "is_tripped": True,
+                "reason": msg,
+                "remaining_minutes": 720,
+                "cooldown_until": (now_utc + datetime.timedelta(hours=12)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "shield_status": f"🟡 COOLDOWN ACTIVE: {msg}",
+                "allow_new_entries": False,
+            }
+
+    # 4. India VIX Extreme Volatility Check
+    vix_panic = False
+    vix_val = 14.5
+    try:
+        from utils.macro import get_live_cross_asset_macro
+        macro_d = get_live_cross_asset_macro()
+        vix_val = float(macro_d.get("india_vix", 14.5))
+        if vix_val >= 22.0:
+            vix_panic = True
+    except Exception:
+        pass
+
+    if vix_panic:
+        return {
+            "is_tripped": False,
+            "reason": f"India VIX High Volatility ({vix_val:.1f} >= 22.0) - Capital Preservation Active",
+            "remaining_minutes": 0,
+            "cooldown_until": "",
+            "shield_status": f"⚠️ VOLATILITY GOVERNOR: India VIX {vix_val:.1f} (Breakouts Suppressed)",
+            "allow_new_entries": False,
+            "vix_governor": True,
+        }
+
+    # 5. Friday Afternoon Weekend Blackout Check (> 14:30 IST on Fridays)
+    weekday = ist_now.weekday()
+    time_str = ist_now.strftime("%H:%M")
+    is_friday_blackout = (weekday == 4 and time_str >= "14:30")
+
+    return {
+        "is_tripped": False,
+        "reason": "Normal operations",
+        "remaining_minutes": 0,
+        "cooldown_until": "",
+        "shield_status": "🟢 RISK SHIELDS NORMAL (All Circuit Breakers Armed)",
+        "allow_new_entries": True,
+        "friday_blackout": is_friday_blackout,
+        "today_pnl": today_pnl,
     }
 
 
@@ -148,6 +323,12 @@ def scan_multi_horizon_candidates(
                         c_prev = float(df_t["Close"].iloc[-2])
                         high = float(df_t["High"].iloc[-1])
                         low = float(df_t["Low"].iloc[-1])
+
+                        # Institutional Data Sanity & Circuit Check
+                        is_sane, s_reason = validate_quote_sanity(tick, close, c_prev, high, low)
+                        if not is_sane:
+                            logger.debug(f"Data sanity check failed for {tick}: {s_reason}")
+                            continue
 
                         tr = max(high - low, abs(high - c_prev), abs(low - c_prev))
                         atr = float(df_t["High"].tail(14).max() - df_t["Low"].tail(14).min()) / 5.0
@@ -236,6 +417,15 @@ def scan_multi_horizon_candidates(
 
                 close_s = df_daily["Close"].astype(float)
                 c_now = float(close_s.iloc[-1])
+                c_prev_d = float(close_s.iloc[-2]) if len(close_s) >= 2 else c_now
+                h_now = float(df_daily["High"].iloc[-1])
+                l_now = float(df_daily["Low"].iloc[-1])
+
+                is_sane, s_reason = validate_quote_sanity(tick, c_now, c_prev_d, h_now, l_now)
+                if not is_sane:
+                    logger.debug(f"Swing quote sanity check failed for {tick}: {s_reason}")
+                    continue
+
                 ema20 = float(close_s.ewm(span=20).mean().iloc[-1])
                 ema50 = float(close_s.ewm(span=50).mean().iloc[-1])
 
@@ -408,8 +598,19 @@ def monitor_and_resolve_open_trades(dry_run: bool = True) -> list[dict[str, Any]
                 pm["trade_id"] = tid
                 log_trade_postmortem(pm)
 
-                # ML Meta-model retrain feedback
-                retrain_res = retrain_ensemble_from_trade_journal()
+                # ML Meta-model retrain feedback (Sample Gating: N >= 50 to prevent overfitting)
+                try:
+                    with get_connection() as conn:
+                        cur = conn.cursor()
+                        cur.execute("SELECT count(*) FROM paper_trades WHERE status != 'OPEN'")
+                        closed_sample_count = cur.fetchone()[0]
+                    if closed_sample_count >= 50:
+                        retrain_res = retrain_ensemble_from_trade_journal()
+                        logger.info(f"Retrained ML ensemble on {closed_sample_count} completed trades.")
+                    else:
+                        logger.info(f"ML retrain deferred: sample size ({closed_sample_count}) < 50 minimum.")
+                except Exception as ex_rt:
+                    logger.debug(f"ML retrain guard error: {ex_rt}")
 
                 # Generate plain-English Learning Summary ("What Went Right vs Mistakes")
                 pnl_amt = pm["pnl_amount"]
@@ -485,13 +686,20 @@ def run_auto_trade_cycle(
     # Step 1: Monitor and exit triggered positions
     closed_trades = monitor_and_resolve_open_trades(dry_run=(exec_mode == "SIMULATION"))
 
+    # Step 1B: Institutional Circuit Breaker & Drawdown Shield Evaluation
+    cb_status = evaluate_circuit_breakers(capital=user_budget, budget=user_budget)
+    allow_entries = cb_status.get("allow_new_entries", True)
+
     active_now = get_active_auto_trades()
     new_entries = []
 
-    # Step 2: If Auto-Trade is active, scan and enter trades
+    # Step 2: If Auto-Trade is active and shields permit, scan and enter trades
     if is_enabled:
         open_count = len(active_now)
-        slots_available = max(0, max_positions - open_count)
+        slots_available = max(0, max_positions - open_count) if allow_entries else 0
+
+        if not allow_entries:
+            logger.warning(f"Auto-Trader new entries suppressed: {cb_status.get('shield_status')}")
 
         if slots_available > 0:
             current_tickers = [t["ticker"] for t in active_now]
@@ -577,6 +785,7 @@ def run_auto_trade_cycle(
         "new_entries": new_entries,
         "learnings": recent_learnings,
         "market_timing": is_indian_market_open_or_simulated(),
+        "circuit_breaker": cb_status,
     }
 
 

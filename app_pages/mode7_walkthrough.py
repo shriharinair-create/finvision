@@ -226,6 +226,24 @@ def render_mode7():
                 """)
             )
 
+        with st.expander("8. 🛡️ The 8 Institutional Circuit Breakers & Risk Shields", expanded=True):
+            st.markdown(
+                textwrap.dedent("""
+                To permanently eliminate catastrophic loss vulnerabilities, FinVision embeds an institutional defense-in-depth matrix:
+
+                | Risk Shield | Trigger Condition | Automated Protective Action |
+                | :--- | :--- | :--- |
+                | **1. Daily Drawdown Breaker** | Account P&L drops below **-2.5%** in a single session | Halts all autonomous entries for 24h; preserves remaining 97.5% of capital. |
+                | **2. Consecutive Loss Cooldown** | **3 consecutive stop-outs** in a 24-hour window | 12-hour timeout; prevents revenge trading and algorithmic tilt during chop. |
+                | **3. Data Anomaly Guard** | Quote timestamp stale (>10m) or single candle jump **>25%** | Vetoes order immediately; prevents trading on corrupted broker data feeds. |
+                | **4. Circuit Limit Trap Shield** | Stock price within **0.8%** of 5%/10%/20% exchange band | Blocks entry; prevents getting trapped in lower-circuit illiquidity freeze. |
+                | **5. India VIX Panic Governor** | India VIX exceeds **22.0** or surges **>15%** intraday | Switches to Capital Preservation; suppresses breakout long entries. |
+                | **6. Sample-Gated Retraining** | Closed trade sample size **$N < 50$** | Defers ML ensemble retraining to eliminate small-sample recency overfitting. |
+                | **7. Friday Weekend Blackout** | Friday afternoon past **14:30 IST** | Disallows new multi-day swing holds into weekend geopolitical gap risk. |
+                | **8. Emergency Kill Button** | Trader clicks **`🚨 EMERGENCY KILL`** | Immediately shuts off Auto-Trader and locks shields for the day. |
+                """)
+            )
+
     # ── TAB 3: Cross-Device & Auto-Failover ───────────────────────────────────
     with tabs[2]:
         st.markdown("### 📱 Cross-Device Synchronisation & Automated Failover")

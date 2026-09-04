@@ -56,6 +56,9 @@ from utils.auto_trader import (
     get_active_auto_trades,
     is_indian_market_open_or_simulated,
     diagnose_trade_postmortem,
+    evaluate_circuit_breakers,
+    trip_circuit_breaker,
+    reset_circuit_breaker,
 )
 from utils.bse_helper import resolve_indian_ticker, is_bse_scrip_code
 from utils.bse_corporate import check_corporate_event_risk
@@ -189,8 +192,15 @@ def render_mode0():
         else:
             node_badge = '<span style="background:#23863622;color:#3FB950;border:1px solid #23863655;padding:3px 10px;border-radius:12px;font-size:10px;font-weight:700;">📱 COMPANION (Monitoring PC Execution · Heartbeat OK)</span>'
 
-    border_color = "#238636" if is_at_active else "#30363D"
-    glow = "box-shadow: 0 0 20px rgba(35,134,54,0.25);" if is_at_active else "box-shadow: 0 4px 16px rgba(0,0,0,0.3);"
+    # Circuit Breaker Evaluation
+    cb_telemetry = evaluate_circuit_breakers(capital=top_budget, budget=top_budget)
+    is_cb_tripped = cb_telemetry.get("is_tripped", False)
+    cb_badge_color = "#F85149" if is_cb_tripped else "#3FB950" if cb_telemetry.get("allow_new_entries") else "#D29922"
+    cb_badge_text = "🔴 CIRCUIT BREAKER ACTIVE" if is_cb_tripped else "🟢 SHIELDS NORMAL" if cb_telemetry.get("allow_new_entries") else "🟡 VOLATILITY SHIELD"
+    cb_pill = f'<span style="background:{cb_badge_color}22;color:{cb_badge_color};border:1px solid {cb_badge_color}55;padding:2px 8px;border-radius:12px;font-size:10px;font-weight:700;">{cb_badge_text}</span>'
+
+    border_color = "#F85149" if is_cb_tripped else ("#238636" if is_at_active else "#30363D")
+    glow = "box-shadow: 0 0 20px rgba(248,81,73,0.25);" if is_cb_tripped else ("box-shadow: 0 0 20px rgba(35,134,54,0.25);" if is_at_active else "box-shadow: 0 4px 16px rgba(0,0,0,0.3);")
 
     # 1. Main Live Scanner Hero Banner
     st.markdown(
@@ -202,9 +212,10 @@ def render_mode0():
                         <span style="background:#1f6feb; color:#FFF; font-weight:800; font-size:10px; padding:2px 8px; border-radius:12px; letter-spacing:0.8px;">📡 LIVE SCANNER TELEMETRY</span>
                         <span style="background:#21262d; color:#8b949e; font-size:10px; padding:2px 8px; border-radius:12px;">NIFTY 500 AUTONOMOUS RADAR</span>
                         {node_badge}
+                        {cb_pill}
                     </div>
                     <h3 style="margin:6px 0 2px 0; color:#F0F6FC; font-size:21px; font-weight:800;">🤖 FinVision Autonomous Auto-Trader</h3>
-                    <div style="font-size:12px; color:#8B949E;">Continuously scans 500+ Indian equities, evaluates multi-timeframe ML consensus (&gt;55%), enforces strict 1% risk budgeting, and executes autonomous trades.</div>
+                    <div style="font-size:12px; color:#8B949E;">Continuously scans 500+ Indian equities, enforces strict 1% risk budgeting, evaluates Lopez de Prado meta-labels, and guards capital with institutional circuit breakers.</div>
                 </div>
                 <div>
                     {status_pill}
@@ -214,6 +225,17 @@ def render_mode0():
         """),
         unsafe_allow_html=True
     )
+
+    # Tripped Circuit Breaker Alert Banner
+    if is_cb_tripped:
+        c_cb1, c_cb2 = st.columns([3.5, 1])
+        with c_cb1:
+            st.error(f"🛑 **{cb_telemetry.get('shield_status')}**\n\nAll autonomous new trade entries are locked to protect capital. Existing open positions continue to be safely monitored and exited.")
+        with c_cb2:
+            if st.button("🔄 Override & Reset Shields", key="btn_reset_cb_cockpit", use_container_width=True):
+                reset_circuit_breaker()
+                st.toast("Circuit Breaker reset. Trading permitted.", icon="🟢")
+                st.rerun()
 
     # 2. Live Scanner Telemetry Metric Cards
     c_tel1, c_tel2, c_tel3, c_tel4 = st.columns(4)
@@ -252,11 +274,11 @@ def render_mode0():
             help="Maximum capital risked on any individual trade."
         )
 
-    # 3. Quick Engine Controls (Master Switch, Trigger Button, Cross-Device Sync)
-    c_ctrl1, c_ctrl2, c_ctrl3 = st.columns([1.2, 1.4, 1.2])
+    # 3. Quick Engine Controls (Master Switch, Trigger Button, Cross-Device Sync, Emergency Kill)
+    c_ctrl1, c_ctrl2, c_ctrl3, c_ctrl4 = st.columns([1.1, 1.3, 1.0, 1.0])
     with c_ctrl1:
         t_master = st.toggle(
-            "⚡ Auto-Trade Engine Master Switch",
+            "⚡ Auto-Trade Master Switch",
             value=is_at_active,
             key="toggle_at_master_hero",
             help="When ON, the AI will autonomously scan for high-conviction trades and execute without manual intervention."
@@ -297,6 +319,18 @@ def render_mode0():
                     st.toast(f"✅ {sync_res.get('message', 'State synchronized.')}", icon="☁️")
                 except Exception as ex_sync:
                     st.toast(f"Sync note: {ex_sync}", icon="ℹ️")
+            st.rerun()
+    with c_ctrl4:
+        if st.button("🚨 EMERGENCY KILL", key="btn_at_emergency_kill", use_container_width=True, help="Immediately halts Auto-Trader and locks shields."):
+            auto_cfg["is_enabled"] = False
+            trip_circuit_breaker("Emergency Manual Kill Switch Activated by Trader", cooldown_hours=24.0)
+            save_auto_trader_config(auto_cfg)
+            try:
+                from utils.cross_device_sync import push_sync_to_cloud_async
+                push_sync_to_cloud_async()
+            except Exception:
+                pass
+            st.toast("🚨 EMERGENCY KILL ACTIVATED! Auto-Trader halted.", icon="🛑")
             st.rerun()
 
     # 4. Live Scanner Radar & Active Positions Feed (Directly visible without expander)
@@ -476,6 +510,31 @@ def render_mode0():
                     help="Enter NSE tickers without .NS (e.g. TATAMOTORS, INFY, ITC, SBIN). The Auto-Trader will only scan and trade these specific stocks."
                 ).strip().upper()
 
+        # Institutional Circuit Breaker Guardrails
+        c_cb_cfg1, c_cb_cfg2 = st.columns(2)
+        with c_cb_cfg1:
+            cur_dd_pct = float(auto_cfg.get("daily_drawdown_limit_pct", 0.025)) * 100.0
+            new_dd_pct = st.slider(
+                "Max Daily Drawdown Circuit Breaker (%)",
+                min_value=1.0,
+                max_value=5.0,
+                value=float(cur_dd_pct),
+                step=0.5,
+                key="slider_cb_drawdown_pct",
+                help="If total daily account loss exceeds this percentage, trading halts immediately for 24 hours."
+            )
+        with c_cb_cfg2:
+            cur_consec = int(auto_cfg.get("consecutive_loss_limit", 3))
+            new_consec = st.slider(
+                "Consecutive Loss Cooldown Limit",
+                min_value=2,
+                max_value=5,
+                value=int(cur_consec),
+                step=1,
+                key="slider_cb_consec_limit",
+                help="If this number of consecutive losing trades occurs in 24 hours, trading pauses for 12 hours to avoid whipsaws."
+            )
+
         # Live Broker Details
         sel_brk = auto_cfg.get("selected_broker", "Zerodha Kite")
         wb_url_val = auto_cfg.get("broker_webhook_url", "")
@@ -507,6 +566,8 @@ def render_mode0():
             "selected_broker": sel_brk,
             "broker_webhook_url": wb_url_val,
             "custom_watchlist": new_custom_wl,
+            "daily_drawdown_limit_pct": new_dd_pct / 100.0,
+            "consecutive_loss_limit": new_consec,
         }
 
         if (
@@ -516,6 +577,8 @@ def render_mode0():
             or sel_brk != auto_cfg.get("selected_broker")
             or wb_url_val != auto_cfg.get("broker_webhook_url")
             or new_custom_wl != auto_cfg.get("custom_watchlist", "")
+            or (new_dd_pct / 100.0) != float(auto_cfg.get("daily_drawdown_limit_pct", 0.025))
+            or new_consec != int(auto_cfg.get("consecutive_loss_limit", 3))
         ):
             save_auto_trader_config(new_cfg)
             try:

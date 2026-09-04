@@ -217,10 +217,17 @@ def init_db() -> None:
             VALUES (1, 0, 'SIMULATION', 'DAY_TRADE,SWING_TRADE,LONG_TERM', 3, 0.01, 100000.0, 'Zerodha Kite', '')
         """)
 
-        try:
-            cursor.execute("ALTER TABLE auto_trader_settings ADD COLUMN custom_watchlist TEXT DEFAULT ''")
-        except Exception:
-            pass
+        for col_def in [
+            "custom_watchlist TEXT DEFAULT ''",
+            "daily_drawdown_limit_pct REAL DEFAULT 0.025",
+            "consecutive_loss_limit INTEGER DEFAULT 3",
+            "circuit_breaker_triggered_until TEXT DEFAULT ''",
+            "circuit_breaker_reason TEXT DEFAULT ''",
+        ]:
+            try:
+                cursor.execute(f"ALTER TABLE auto_trader_settings ADD COLUMN {col_def}")
+            except Exception:
+                pass
 
         # 11. Autonomous Auto-Trader Learning & Autopsy Feed
         cursor.execute("""
@@ -781,10 +788,18 @@ def get_auto_trader_config() -> dict[str, Any]:
                 "selected_broker": "Zerodha Kite",
                 "broker_webhook_url": "",
                 "custom_watchlist": "",
+                "daily_drawdown_limit_pct": 0.025,
+                "consecutive_loss_limit": 3,
+                "circuit_breaker_triggered_until": "",
+                "circuit_breaker_reason": "",
             }
         d = dict(row)
         d["is_enabled"] = bool(d.get("is_enabled", 0))
         d.setdefault("custom_watchlist", "")
+        d.setdefault("daily_drawdown_limit_pct", 0.025)
+        d.setdefault("consecutive_loss_limit", 3)
+        d.setdefault("circuit_breaker_triggered_until", "")
+        d.setdefault("circuit_breaker_reason", "")
         return d
 
 
@@ -796,8 +811,10 @@ def save_auto_trader_config(config: dict[str, Any]) -> bool:
             INSERT INTO auto_trader_settings (
                 id, is_enabled, execution_mode, enabled_horizons,
                 max_concurrent_positions, risk_pct_per_trade, allocated_budget,
-                selected_broker, broker_webhook_url, custom_watchlist, updated_at
-            ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                selected_broker, broker_webhook_url, custom_watchlist,
+                daily_drawdown_limit_pct, consecutive_loss_limit,
+                circuit_breaker_triggered_until, circuit_breaker_reason, updated_at
+            ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
             ON CONFLICT(id) DO UPDATE SET
                 is_enabled = excluded.is_enabled,
                 execution_mode = excluded.execution_mode,
@@ -808,6 +825,10 @@ def save_auto_trader_config(config: dict[str, Any]) -> bool:
                 selected_broker = excluded.selected_broker,
                 broker_webhook_url = excluded.broker_webhook_url,
                 custom_watchlist = excluded.custom_watchlist,
+                daily_drawdown_limit_pct = excluded.daily_drawdown_limit_pct,
+                consecutive_loss_limit = excluded.consecutive_loss_limit,
+                circuit_breaker_triggered_until = excluded.circuit_breaker_triggered_until,
+                circuit_breaker_reason = excluded.circuit_breaker_reason,
                 updated_at = CURRENT_TIMESTAMP
         """, (
             1 if config.get("is_enabled", False) else 0,
@@ -819,9 +840,36 @@ def save_auto_trader_config(config: dict[str, Any]) -> bool:
             config.get("selected_broker", "Zerodha Kite"),
             config.get("broker_webhook_url", ""),
             config.get("custom_watchlist", ""),
+            float(config.get("daily_drawdown_limit_pct", 0.025)),
+            int(config.get("consecutive_loss_limit", 3)),
+            str(config.get("circuit_breaker_triggered_until", "")),
+            str(config.get("circuit_breaker_reason", "")),
         ))
         conn.commit()
         return True
+
+
+def trip_circuit_breaker(reason: str, cooldown_hours: float = 24.0) -> bool:
+    """Activates the institutional circuit breaker, halting autonomous trading."""
+    import datetime
+    now_utc = datetime.datetime.now(datetime.timezone.utc)
+    until_dt = now_utc + datetime.timedelta(hours=cooldown_hours)
+    until_str = until_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    cfg = get_auto_trader_config()
+    cfg["circuit_breaker_triggered_until"] = until_str
+    cfg["circuit_breaker_reason"] = reason
+    save_auto_trader_config(cfg)
+    return True
+
+
+def reset_circuit_breaker() -> bool:
+    """Manually resets the circuit breaker, restoring normal trading shields."""
+    cfg = get_auto_trader_config()
+    cfg["circuit_breaker_triggered_until"] = ""
+    cfg["circuit_breaker_reason"] = ""
+    save_auto_trader_config(cfg)
+    return True
 
 
 def log_auto_trader_learning(learning: dict[str, Any]) -> int:
