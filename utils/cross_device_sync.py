@@ -74,16 +74,79 @@ def export_sync_payload() -> dict[str, Any]:
         logger.debug(f"Could not read paper trades for sync: {e}")
 
     now_utc = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    dev_type = get_current_device_type()
+
+    # Track PC heartbeat
+    last_pc_hb = prefs.get("last_pc_heartbeat", "")
+    if dev_type == "PC":
+        last_pc_hb = now_utc
+        save_user_preference("last_pc_heartbeat", now_utc)
+
     return {
         "version": "1.0",
         "exported_at": now_utc,
-        "source_device": get_current_device_type(),
+        "source_device": dev_type,
+        "pc_heartbeat": last_pc_hb,
         "auto_trader_config": cfg,
         "active_auto_trades": active_trades,
         "recent_paper_trades": recent_paper_trades,
         "learnings": learnings,
         "user_preferences": prefs,
     }
+
+
+def check_pc_heartbeat_health(timeout_minutes: int = 8) -> dict[str, Any]:
+    """
+    Evaluates whether the PC Execution Leader is alive or timed out.
+    Used by Cloud/Mobile nodes to trigger automated failover if PC crashes or shuts down.
+    """
+    dev_type = get_current_device_type()
+    if dev_type == "PC":
+        return {
+            "is_pc_alive": True,
+            "minutes_since_heartbeat": 0.0,
+            "pc_last_seen": "Currently Active (Local PC)",
+            "should_failover": False,
+        }
+
+    # On Cloud / Mobile:
+    prefs = get_user_preferences()
+    last_hb_str = prefs.get("last_pc_heartbeat", "")
+    if not last_hb_str and LOCAL_SYNC_FILE.exists():
+        try:
+            with open(LOCAL_SYNC_FILE, "r", encoding="utf-8") as f:
+                last_hb_str = json.load(f).get("pc_heartbeat", "")
+        except Exception:
+            pass
+
+    if not last_hb_str:
+        return {
+            "is_pc_alive": False,
+            "minutes_since_heartbeat": 999.0,
+            "pc_last_seen": "Never Seen",
+            "should_failover": True,
+        }
+
+    try:
+        hb_dt = datetime.datetime.fromisoformat(last_hb_str.replace("Z", "+00:00"))
+        now_dt = datetime.datetime.now(datetime.timezone.utc)
+        diff_seconds = max(0.0, (now_dt - hb_dt).total_seconds())
+        diff_minutes = round(diff_seconds / 60.0, 1)
+        is_alive = diff_minutes <= timeout_minutes
+
+        return {
+            "is_pc_alive": is_alive,
+            "minutes_since_heartbeat": diff_minutes,
+            "pc_last_seen": f"{diff_minutes:.0f}m ago" if diff_minutes < 60 else f"{diff_minutes/60:.1f}h ago",
+            "should_failover": not is_alive,
+        }
+    except Exception:
+        return {
+            "is_pc_alive": False,
+            "minutes_since_heartbeat": 999.0,
+            "pc_last_seen": "Unknown",
+            "should_failover": True,
+        }
 
 
 def apply_sync_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -202,9 +265,11 @@ def apply_sync_payload(payload: dict[str, Any]) -> dict[str, Any]:
         except Exception:
             pass
 
-    # Save timestamp of last successful sync
+    # Save timestamp of last successful sync and PC heartbeat
     save_user_preference("last_cross_device_sync_at", payload.get("exported_at", ""))
     save_user_preference("last_cross_device_sync_source", payload.get("source_device", "REMOTE"))
+    if payload.get("pc_heartbeat"):
+        save_user_preference("last_pc_heartbeat", payload.get("pc_heartbeat"))
 
     return {
         "status": "SUCCESS",

@@ -578,16 +578,31 @@ def auto_trader_background_loop(poll_interval: int = 180):
             is_enabled = cfg.get("is_enabled", False)
 
             from utils.user_prefs import get_user_preferences
-            from utils.cross_device_sync import get_current_device_type
-            exec_leader = get_user_preferences().get("execution_leader", "PC_PRIMARY")
+            from utils.cross_device_sync import get_current_device_type, check_pc_heartbeat_health
+            exec_leader = get_user_preferences().get("execution_leader", "AUTO_FAILOVER")
             dev_type = get_current_device_type()
 
-            # Leader Protection: Prevents duplicate order execution across PC and Mobile!
-            is_execution_leader = (
-                (exec_leader == "PC_PRIMARY" and dev_type == "PC")
-                or (exec_leader == "CLOUD_PRIMARY" and dev_type != "PC")
-                or (exec_leader == "ALL_DEVICES")
-            )
+            # Leader Protection & Automated Failover Logic:
+            is_execution_leader = False
+            auto_failover_active = False
+
+            if dev_type == "PC":
+                # PC is active locally: takes primary execution responsibility
+                is_execution_leader = (exec_leader in ("AUTO_FAILOVER", "PC_PRIMARY", "ALL_DEVICES"))
+            else:
+                # Running on Cloud / Mobile:
+                if exec_leader in ("CLOUD_PRIMARY", "ALL_DEVICES"):
+                    is_execution_leader = True
+                elif exec_leader in ("AUTO_FAILOVER", "PC_PRIMARY"):
+                    # Check if PC has crashed or stopped sending heartbeats (>8 mins)
+                    hb_health = check_pc_heartbeat_health(timeout_minutes=8)
+                    if hb_health.get("should_failover", False):
+                        is_execution_leader = True
+                        auto_failover_active = True
+                        logger.warning(
+                            f"🚨 Auto-Failover Triggered: PC offline ({hb_health.get('pc_last_seen')}). "
+                            "Cloud server has automatically taken over trade execution."
+                        )
 
             if is_enabled:
                 if is_execution_leader:
@@ -601,7 +616,7 @@ def auto_trader_background_loop(poll_interval: int = 180):
                     except Exception:
                         pass
                 else:
-                    # Companion / Observer Node (e.g. Mobile connecting to Cloud):
+                    # Companion / Observer Node (e.g. Mobile connecting to Cloud while PC is alive):
                     # Pulls live status & open positions from PC Leader without duplicate execution
                     try:
                         from utils.cross_device_sync import pull_and_apply_cloud_sync

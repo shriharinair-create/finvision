@@ -173,16 +173,21 @@ def render_mode0():
         '⚪ LIVE SCANNER STANDBY (OFF)</span>'
     )
 
-    from utils.cross_device_sync import get_current_device_type
+    from utils.cross_device_sync import get_current_device_type, check_pc_heartbeat_health
     dev_type = get_current_device_type()
-    exec_leader = top_prefs.get("execution_leader", "PC_PRIMARY")
-    is_leader = (exec_leader == "PC_PRIMARY" and dev_type == "PC") or (exec_leader == "CLOUD_PRIMARY" and dev_type != "PC")
+    exec_leader = top_prefs.get("execution_leader", "AUTO_FAILOVER")
+    hb_status = check_pc_heartbeat_health(timeout_minutes=8)
+    pc_alive = hb_status.get("is_pc_alive", False)
 
-    node_badge = (
-        '<span style="background:#1f6feb22;color:#58A6FF;border:1px solid #1f6feb55;padding:3px 10px;border-radius:12px;font-size:10px;font-weight:700;">🖥️ LEADER: PC (Executing)</span>'
-        if is_leader
-        else '<span style="background:#8957e522;color:#BC8CFF;border:1px solid #8957e555;padding:3px 10px;border-radius:12px;font-size:10px;font-weight:700;">📱 COMPANION (Monitoring PC Execution)</span>'
-    )
+    if dev_type == "PC":
+        node_badge = '<span style="background:#1f6feb22;color:#58A6FF;border:1px solid #1f6feb55;padding:3px 10px;border-radius:12px;font-size:10px;font-weight:700;">🖥️ LEADER: PC (Active & Executing)</span>'
+    else:
+        if exec_leader == "CLOUD_PRIMARY":
+            node_badge = '<span style="background:#8957e522;color:#BC8CFF;border:1px solid #8957e555;padding:3px 10px;border-radius:12px;font-size:10px;font-weight:700;">☁️ LEADER: CLOUD (24/7 Executing)</span>'
+        elif not pc_alive and exec_leader in ("AUTO_FAILOVER", "PC_PRIMARY"):
+            node_badge = f'<span style="background:#d2992222;color:#F0883E;border:1px solid #d2992266;padding:3px 10px;border-radius:12px;font-size:10px;font-weight:700;">⚡ AUTO-FAILOVER ACTIVE (PC Offline · Cloud Managing Trades)</span>'
+        else:
+            node_badge = '<span style="background:#23863622;color:#3FB950;border:1px solid #23863655;padding:3px 10px;border-radius:12px;font-size:10px;font-weight:700;">📱 COMPANION (Monitoring PC Execution · Heartbeat OK)</span>'
 
     border_color = "#238636" if is_at_active else "#30363D"
     glow = "box-shadow: 0 0 20px rgba(35,134,54,0.25);" if is_at_active else "box-shadow: 0 4px 16px rgba(0,0,0,0.3);"
@@ -389,16 +394,21 @@ def render_mode0():
         c_lead1, c_lead2 = st.columns([2, 1])
         with c_lead1:
             leader_opt = st.selectbox(
-                "Designated Execution Leader (Anti-Duplicate Trading Guard)",
+                "Execution Leader & Failover Strategy",
                 options=[
-                    "🖥️ PC Primary (Recommended — PC executes trades, Mobile monitors)",
-                    "☁️ Cloud 24/7 Primary (Streamlit Cloud executes trades continuously)",
+                    "🛡️ Auto-Failover (Recommended — PC executes; Cloud auto-takes over if PC crashes/shuts down)",
+                    "🖥️ PC Only (Strict — Scans run only while PC is powered on)",
+                    "☁️ Cloud 24/7 Primary (Streamlit Cloud executes continuously; PC monitors)",
                 ],
-                index=0 if exec_leader == "PC_PRIMARY" else 1,
+                index=0 if exec_leader == "AUTO_FAILOVER" else 1 if exec_leader == "PC_PRIMARY" else 2,
                 key="sel_exec_leader_cfg",
-                help="Guarantees only ONE designated machine places orders to eliminate duplicate trade risk. The other device operates as a live companion and remote square-off control."
+                help="In Auto-Failover mode, PC handles execution while alive. If PC goes offline for >8 minutes during trading hours, Cloud automatically assumes leadership to protect, track, and exit open positions without manual intervention."
             )
-            new_exec_leader = "PC_PRIMARY" if "PC" in leader_opt else "CLOUD_PRIMARY"
+            new_exec_leader = (
+                "AUTO_FAILOVER" if "Auto-Failover" in leader_opt
+                else "PC_PRIMARY" if "PC Only" in leader_opt
+                else "CLOUD_PRIMARY"
+            )
             if new_exec_leader != exec_leader:
                 save_user_preference("execution_leader", new_exec_leader)
                 try:
@@ -406,13 +416,13 @@ def render_mode0():
                     push_sync_to_cloud_async()
                 except Exception:
                     pass
-                st.toast(f"Execution Leader set to {new_exec_leader}.", icon="🛡️")
+                st.toast(f"Execution Strategy set to {new_exec_leader}.", icon="🛡️")
                 st.rerun()
         with c_lead2:
             st.markdown(
                 f"<div style='background:#161B22; border:1px solid #30363D; border-radius:8px; padding:8px 12px; margin-top:24px; font-size:11px; color:#8B949E;'>"
                 f"This Machine: <strong>{dev_type}</strong><br/>"
-                f"Operating Role: <strong>{'Execution Leader ⚡' if is_leader else 'Companion Monitor 📱'}</strong>"
+                f"PC Status: <strong>{'Active & Online ✅' if pc_alive else 'Offline ⚠️'}</strong>"
                 f"</div>",
                 unsafe_allow_html=True
             )

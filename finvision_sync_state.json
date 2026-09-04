@@ -1,7 +1,8 @@
 {
   "version": "1.0",
-  "exported_at": "2026-09-04T13:39:27Z",
+  "exported_at": "2026-09-04T14:05:03Z",
   "source_device": "PC",
+  "pc_heartbeat": "2026-09-04T14:05:03Z",
   "auto_trader_config": {
     "id": 1,
     "is_enabled": true,
@@ -12,7 +13,7 @@
     "allocated_budget": 20000.0,
     "selected_broker": "Zerodha Kite",
     "broker_webhook_url": "",
-    "updated_at": "2026-09-04 02:56:44"
+    "updated_at": "2026-09-04 13:39:48"
   },
   "active_auto_trades": [],
   "recent_paper_trades": [
@@ -42,6 +43,9 @@
     "total_capital": 20000.0,
     "risk_profile": "Conservative (0.5% max risk)",
     "risk_pct": 0.01,
-    "trading_goal_index": 0
+    "trading_goal_index": 0,
+    "last_cross_device_sync_at": "2026-09-04T13:39:27Z",
+    "last_cross_device_sync_source": "PC",
+    "last_pc_heartbeat": "2026-09-04T14:04:54Z"
   }
 }
