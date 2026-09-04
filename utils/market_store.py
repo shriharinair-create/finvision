@@ -194,6 +194,60 @@ def init_db() -> None:
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+
+        # 10. Autonomous Auto-Trader Configuration
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS auto_trader_settings (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                is_enabled INTEGER DEFAULT 0,
+                execution_mode TEXT DEFAULT 'SIMULATION', -- 'SIMULATION' or 'LIVE_BROKER'
+                enabled_horizons TEXT DEFAULT 'DAY_TRADE,SWING_TRADE,LONG_TERM',
+                max_concurrent_positions INTEGER DEFAULT 3,
+                risk_pct_per_trade REAL DEFAULT 0.01,
+                allocated_budget REAL DEFAULT 100000.0,
+                selected_broker TEXT DEFAULT 'Zerodha Kite',
+                broker_webhook_url TEXT DEFAULT '',
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # Seed default auto_trader_settings row if not present
+        cursor.execute("""
+            INSERT OR IGNORE INTO auto_trader_settings (id, is_enabled, execution_mode, enabled_horizons, max_concurrent_positions, risk_pct_per_trade, allocated_budget, selected_broker, broker_webhook_url)
+            VALUES (1, 0, 'SIMULATION', 'DAY_TRADE,SWING_TRADE,LONG_TERM', 3, 0.01, 100000.0, 'Zerodha Kite', '')
+        """)
+
+        # 11. Autonomous Auto-Trader Learning & Autopsy Feed
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS auto_trader_learnings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                trade_id INTEGER,
+                ticker TEXT NOT NULL,
+                horizon TEXT NOT NULL,
+                outcome TEXT NOT NULL, -- 'TARGET_HIT', 'STOP_HIT', 'INTRADAY_TIME_EXIT', 'MANUAL_EXIT'
+                pnl_amount REAL DEFAULT 0.0,
+                pnl_pct REAL DEFAULT 0.0,
+                diagnosis_code TEXT NOT NULL,
+                root_cause TEXT,
+                what_went_right TEXT,
+                mistakes_made TEXT,
+                corrective_action TEXT,
+                buffer_multiplier REAL DEFAULT 1.0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # Migration: Ensure paper_trades has auto-trade tracking columns
+        for col_def in [
+            ("is_auto_trade", "INTEGER DEFAULT 0"),
+            ("execution_mode", "TEXT DEFAULT 'SIMULATION'"),
+            ("horizon", "TEXT DEFAULT 'DAY_TRADE'"),
+        ]:
+            try:
+                cursor.execute(f"ALTER TABLE paper_trades ADD COLUMN {col_def[0]} {col_def[1]}")
+            except Exception:
+                pass
+
         conn.commit()
 
 
@@ -260,8 +314,11 @@ def log_paper_trade(
     stop_loss_price: float,
     shares: int,
     notes: str = "",
+    is_auto_trade: int = 0,
+    execution_mode: str = "SIMULATION",
+    horizon: str = "DAY_TRADE",
 ) -> int:
-    """Log a new simulated paper trade into the SQLite journal."""
+    """Log a new simulated or broker-dispatched trade into the SQLite journal."""
     ts_now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     pos_val = round(entry_price * shares, 2)
 
@@ -269,9 +326,9 @@ def log_paper_trade(
         cursor = conn.cursor()
         cursor.execute("""
             INSERT INTO paper_trades
-            (timestamp, ticker, trade_type, entry_price, target_price, stop_loss_price, shares, position_value, notes)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (ts_now, ticker.upper(), trade_type, entry_price, target_price, stop_loss_price, shares, pos_val, notes))
+            (timestamp, ticker, trade_type, entry_price, target_price, stop_loss_price, shares, position_value, notes, is_auto_trade, execution_mode, horizon)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (ts_now, ticker.upper(), trade_type, entry_price, target_price, stop_loss_price, shares, pos_val, notes, is_auto_trade, execution_mode, horizon))
         conn.commit()
         return cursor.lastrowid or 0
 
@@ -671,5 +728,115 @@ def get_veteran_rules(status: Optional[str] = None) -> list[dict[str, Any]]:
                 ORDER BY id DESC
             """)
         return [dict(r) for r in cursor.fetchall()]
+
+
+# ── Autonomous Auto-Trader Storage Helpers ─────────────────────────────────────
+
+def get_auto_trader_config() -> dict[str, Any]:
+    """Fetches the persisted auto-trader configuration."""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM auto_trader_settings WHERE id = 1")
+        row = cursor.fetchone()
+        if not row:
+            return {
+                "is_enabled": False,
+                "execution_mode": "SIMULATION",
+                "enabled_horizons": "DAY_TRADE,SWING_TRADE,LONG_TERM",
+                "max_concurrent_positions": 3,
+                "risk_pct_per_trade": 0.01,
+                "allocated_budget": 100000.0,
+                "selected_broker": "Zerodha Kite",
+                "broker_webhook_url": "",
+            }
+        d = dict(row)
+        d["is_enabled"] = bool(d.get("is_enabled", 0))
+        return d
+
+
+def save_auto_trader_config(config: dict[str, Any]) -> bool:
+    """Updates the persisted auto-trader configuration."""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO auto_trader_settings (
+                id, is_enabled, execution_mode, enabled_horizons,
+                max_concurrent_positions, risk_pct_per_trade, allocated_budget,
+                selected_broker, broker_webhook_url, updated_at
+            ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(id) DO UPDATE SET
+                is_enabled = excluded.is_enabled,
+                execution_mode = excluded.execution_mode,
+                enabled_horizons = excluded.enabled_horizons,
+                max_concurrent_positions = excluded.max_concurrent_positions,
+                risk_pct_per_trade = excluded.risk_pct_per_trade,
+                allocated_budget = excluded.allocated_budget,
+                selected_broker = excluded.selected_broker,
+                broker_webhook_url = excluded.broker_webhook_url,
+                updated_at = CURRENT_TIMESTAMP
+        """, (
+            1 if config.get("is_enabled", False) else 0,
+            config.get("execution_mode", "SIMULATION"),
+            config.get("enabled_horizons", "DAY_TRADE,SWING_TRADE,LONG_TERM"),
+            int(config.get("max_concurrent_positions", 3)),
+            float(config.get("risk_pct_per_trade", 0.01)),
+            float(config.get("allocated_budget", 100000.0)),
+            config.get("selected_broker", "Zerodha Kite"),
+            config.get("broker_webhook_url", ""),
+        ))
+        conn.commit()
+        return True
+
+
+def log_auto_trader_learning(learning: dict[str, Any]) -> int:
+    """Logs a closed-loop trade autopsy outcome and machine learning feedback."""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO auto_trader_learnings (
+                trade_id, ticker, horizon, outcome, pnl_amount, pnl_pct,
+                diagnosis_code, root_cause, what_went_right, mistakes_made,
+                corrective_action, buffer_multiplier
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            learning.get("trade_id", 0),
+            learning.get("ticker", "").upper(),
+            learning.get("horizon", "DAY_TRADE"),
+            learning.get("outcome", "MANUAL_EXIT"),
+            float(learning.get("pnl_amount", 0.0)),
+            float(learning.get("pnl_pct", 0.0)),
+            learning.get("diagnosis_code", "UNKNOWN"),
+            learning.get("root_cause", ""),
+            learning.get("what_went_right", ""),
+            learning.get("mistakes_made", ""),
+            learning.get("corrective_action", ""),
+            float(learning.get("buffer_multiplier", 1.0)),
+        ))
+        conn.commit()
+        return cursor.lastrowid or 0
+
+
+def get_auto_trader_learnings(limit: int = 25) -> list[dict[str, Any]]:
+    """Retrieves recent auto-trader learnings and autopsies."""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT * FROM auto_trader_learnings
+            ORDER BY id DESC LIMIT ?
+        """, (limit,))
+        return [dict(r) for r in cursor.fetchall()]
+
+
+def get_active_auto_trades() -> list[dict[str, Any]]:
+    """Retrieves all currently open auto-trader positions."""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT * FROM paper_trades
+            WHERE is_auto_trade = 1 AND status = 'OPEN'
+            ORDER BY id DESC
+        """)
+        return [dict(r) for r in cursor.fetchall()]
+
 
 

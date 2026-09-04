@@ -134,7 +134,12 @@ def sync_from_cloud(cloud_url: str) -> Dict[str, Any]:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="FinVision Cloud-to-PC Sync & Backup")
-    parser.add_argument("--cloud-url", type=str, required=True, help="URL of your Cloud instance (e.g. https://yourname-finvision.hf.space)")
+    parser.add_argument(
+        "--cloud-url",
+        type=str,
+        default="https://finvision-8ysyduhykcish78fnyoxrf.streamlit.app",
+        help="URL of your Cloud instance"
+    )
     args = parser.parse_args()
 
     sync_from_cloud(args.cloud_url)

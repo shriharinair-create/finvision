@@ -226,15 +226,34 @@ def render_mode6():
             st.divider()
 
         # History Table
-        st.markdown("#### 📜 Trade History Journal")
-        if not all_trades:
-            st.info("No paper trades logged yet. Click 'Paper Trade' from the Smart Copilot or Market Scanner!")
+        col_hist_title, col_hist_filter = st.columns([3, 2])
+        with col_hist_title:
+            st.markdown("#### 📜 Trade History Journal")
+        with col_hist_filter:
+            origin_filter = st.radio(
+                "Filter Trades",
+                options=["All Trades", "🤖 Auto-Trader Only", "👤 Manual Only"],
+                horizontal=True,
+                key="radio_filter_origin",
+                label_visibility="collapsed",
+            )
+
+        filtered_trades = all_trades
+        if origin_filter == "🤖 Auto-Trader Only":
+            filtered_trades = [t for t in all_trades if t.get("is_auto_trade") == 1]
+        elif origin_filter == "👤 Manual Only":
+            filtered_trades = [t for t in all_trades if not t.get("is_auto_trade")]
+
+        if not filtered_trades:
+            st.info(f"No trades logged matching filter '{origin_filter}'.")
         else:
             df_trades = pd.DataFrame([
                 {
                     "ID": f"#{t['id']}",
                     "Date": t["timestamp"],
+                    "Origin": "🤖 Auto-Trader" if t.get("is_auto_trade") == 1 else "👤 Manual",
                     "Ticker": t["ticker"],
+                    "Horizon": t.get("horizon", "DAY_TRADE").replace("_", " "),
                     "Type": t["trade_type"],
                     "Shares": t["shares"],
                     "Entry": f"₹{t['entry_price']:,.2f}",
@@ -246,7 +265,7 @@ def render_mode6():
                     "P&L %": f"{'+' if (t['pnl_pct'] or 0) >= 0 else ''}{(t['pnl_pct'] or 0):.2f}%",
                     "Notes": t["notes"] or "",
                 }
-                for t in all_trades
+                for t in filtered_trades
             ])
             st.dataframe(df_trades, use_container_width=True, hide_index=True)
 
