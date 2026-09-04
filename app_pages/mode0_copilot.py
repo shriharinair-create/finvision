@@ -143,7 +143,7 @@ def render_mode0():
     c_act_settings, c_act_walk = st.columns(2)
     with c_act_settings:
         if st.button("⚙️ Settings & Cloud Backup Hub", key="mode0_top_settings_btn", use_container_width=True):
-            st.session_state["top_bar_mode_select"] = "⚙️  Settings & Cloud Backup Hub"
+            st.session_state["target_operating_mode"] = "settings"
             st.rerun()
     with c_act_walk:
         if st.button("📖 App Walkthrough & User Guide", key="copilot_open_walkthrough_btn", use_container_width=True):

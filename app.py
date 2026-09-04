@@ -175,7 +175,7 @@ with st.sidebar:
         pass
 
     if st.sidebar.button("⚙️ Settings & Cloud Backup", key="sidebar_settings_btn", use_container_width=True):
-        st.session_state["top_bar_mode_select"] = "⚙️  Settings & Cloud Backup Hub"
+        st.session_state["target_operating_mode"] = "settings"
         st.rerun()
 
     st.divider()
