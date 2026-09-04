@@ -343,6 +343,38 @@ def render_mode0():
                         log_trade_postmortem(pm)
                         st.toast(f"Position #{at_id} ({at_tick}) squared off manually.", icon="✖")
                         st.rerun()
+        else:
+            if is_at_active:
+                st.markdown(
+                    f"""
+                    <div style="background:#161B22; border:1px dashed #238636; border-radius:8px; padding:12px 16px; margin:10px 0 14px 0;">
+                        <div style="display:flex; justify-content:space-between; align-items:center;">
+                            <span style="color:#3FB950; font-weight:700; font-size:13px;">🟢 Auto-Trader Is Active & Monitoring Market</span>
+                            <span style="font-size:11px; color:#8B949E; background:#0D1117; padding:2px 8px; border-radius:10px;">0 of {max_pos} Slots Used</span>
+                        </div>
+                        <div style="font-size:12px; color:#C9D1D9; margin-top:6px; line-height:1.4;">
+                            The autonomous scanner is actively evaluating 500+ Indian stocks across <strong>{auto_cfg.get('enabled_horizons', 'DAY_TRADE,SWING_TRADE,LONG_TERM').replace('_', ' ')}</strong>.<br/>
+                            When a high-conviction setup is detected (ML consensus &gt; 55% + regime alignment), it will enter automatically and appear here sized to your ₹{top_budget:,.0f} budget.
+                        </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True
+                )
+            else:
+                st.markdown(
+                    f"""
+                    <div style="background:#161B22; border:1px dashed #30363D; border-radius:8px; padding:12px 16px; margin:10px 0 14px 0;">
+                        <div style="display:flex; justify-content:space-between; align-items:center;">
+                            <span style="color:#8B949E; font-weight:700; font-size:13px;">⚪ Auto-Trader Is On Standby (Switched OFF)</span>
+                            <span style="font-size:11px; color:#8B949E; background:#0D1117; padding:2px 8px; border-radius:10px;">0 of {max_pos} Slots Used</span>
+                        </div>
+                        <div style="font-size:12px; color:#8B949E; margin-top:6px; line-height:1.4;">
+                            Turn ON the <strong>Auto-Trade Engine Master Switch</strong> above to enable autonomous entries, or tap <strong>'Trigger Auto-Trade Cycle Now'</strong> to test an instant scan.
+                        </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True
+                )
 
         # ── 🧠 Auto-Trader Brain & Learning Feed ("What Went Right vs Mistakes Made") ──
         with st.expander("🧠 Auto-Trader Brain Activity & Continuous Self-Learning Feed", expanded=bool(recent_auto_learnings)):
