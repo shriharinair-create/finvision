@@ -148,26 +148,37 @@ def scan_multi_horizon_candidates(
 
                         # Meta-Labeling conviction check
                         meta_eval = evaluate_meta_labeling_filter(
-                            technical_bias="BULLISH",
-                            fused_score=72.0,
-                            regime_name=regime.get("regime_name", "BULL_MARKUP"),
-                            india_vix=regime.get("vix_value", 14.5),
-                            event_risk_flag=False,
-                            win_rate_prior=58.0,
+                            ticker=tick,
+                            action="BUY",
+                            entry_price=entry,
+                            stop_loss=stop_loss,
+                            target_price=target1,
+                            conviction_pct=65.0,
+                            rsi=50.0,
+                            regime_code=regime.get("regime_code", "BULL_MARKUP"),
+                            vix_val=float(regime.get("vix_value", 14.5)),
                         )
 
                         # Check ML ensemble consensus
                         ml_res = compute_ml_ensemble_consensus(df_t, "BULLISH")
-                        is_conviction = meta_eval.get("prob_win", 0.5) >= 0.58 and ml_res.get("ml_bias") != "BEARISH"
+                        win_prob = float(meta_eval.get("meta_win_probability_pct", 60.0))
+                        is_conviction = meta_eval.get("is_approved", True) and win_prob >= 50.0 and ml_res.get("ml_bias") != "BEARISH"
 
                         if is_conviction:
                             sizing = compute_position_size(
                                 total_capital=budget,
-                                risk_pct=risk_pct,
+                                risk_pct=risk_pct * float(meta_eval.get("bet_sizing_factor", 1.0)),
                                 entry_price=entry,
                                 stop_price=stop_loss,
                             )
-                            if sizing["shares"] > 0:
+                            shares_count = int(sizing.get("shares", 0))
+                            if shares_count == 0 and budget >= entry:
+                                shares_count = 1
+                                sizing["shares"] = 1
+                                sizing["position_value"] = round(entry, 2)
+                                sizing["cash_at_risk"] = round(entry - stop_loss, 2)
+
+                            if shares_count > 0:
                                 candidates.append({
                                     "ticker": tick,
                                     "horizon": "DAY_TRADE",
@@ -175,12 +186,12 @@ def scan_multi_horizon_candidates(
                                     "entry_price": entry,
                                     "target_price": target1,
                                     "stop_loss_price": stop_loss,
-                                    "shares": sizing["shares"],
+                                    "shares": shares_count,
                                     "position_value": sizing["position_value"],
                                     "cash_at_risk": sizing["cash_at_risk"],
-                                    "conviction_pct": round(meta_eval.get("prob_win", 0.6) * 100, 1),
+                                    "conviction_pct": round(win_prob, 1),
                                     "stop_multiplier": stop_mult,
-                                    "notes": f"Auto-Trader ⚡ Day Setup | Meta P(Win): {meta_eval.get('prob_win', 0.6):.1%} | ML: {ml_res.get('badge')}",
+                                    "notes": f"Auto-Trader ⚡ Day Setup | Meta P(Win): {win_prob:.1f}% | ML: {ml_res.get('badge', 'BULL')}",
                                 })
                     except Exception as e:
                         logger.debug(f"Day scan failed for {tick}: {e}")
