@@ -247,8 +247,9 @@ def render_mode_settings() -> None:
             # Download the latest backup directly to mobile device or PC
             avail = get_available_backups()
             if avail:
-                latest_b_path = Path(avail[0]["path"])
-                if latest_b_path.exists():
+                b_p = avail[0].get("path") or avail[0].get("file_path")
+                latest_b_path = Path(b_p) if b_p else None
+                if latest_b_path and latest_b_path.exists():
                     with open(latest_b_path, "rb") as f:
                         b_bytes = f.read()
                     st.download_button(
@@ -290,8 +291,8 @@ def render_mode_settings() -> None:
                 for b_item in backups_list:
                     b_name = b_item["file_name"]
                     b_time = b_item["timestamp"]
-                    b_size = b_item["size_mb"]
-                    b_path = b_item["path"]
+                    b_size = b_item.get("size_mb", 0)
+                    b_path = b_item.get("path") or b_item.get("file_path")
                     m_data = b_item.get("manifest") or {}
                     t_counts = m_data.get("table_counts", {})
                     trades_cnt = t_counts.get("paper_trades", "—")

@@ -458,6 +458,7 @@ def get_available_backups() -> List[Dict[str, Any]]:
 
             result.append({
                 "file_name": b.name,
+                "path": str(b),
                 "file_path": str(b),
                 "timestamp": manifest_summary.get("backup_timestamp", mtime),
                 "size_mb": sz_mb,
