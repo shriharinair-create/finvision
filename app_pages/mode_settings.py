@@ -27,8 +27,8 @@ from typing import Any, Dict, List
 
 import streamlit as st
 
+from utils.broker_gateway import SUPPORTED_BROKERS
 from utils.auto_trader import (
-    SUPPORTED_BROKERS,
     get_auto_trader_config,
     save_auto_trader_config,
 )

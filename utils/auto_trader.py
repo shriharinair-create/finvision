@@ -49,7 +49,7 @@ from utils.meta_labeling import evaluate_meta_labeling_filter
 from utils.bse_corporate import check_corporate_event_risk
 from utils.trade_postmortem import diagnose_trade_postmortem
 from utils.ml_ensemble import retrain_ensemble_from_trade_journal, compute_ml_ensemble_consensus
-from utils.broker_gateway import build_broker_order_payload, dispatch_broker_order
+from utils.broker_gateway import build_broker_order_payload, dispatch_broker_order, SUPPORTED_BROKERS
 from utils.fundamental_wealth import BLUE_CHIP_COMPOUNDERS, analyze_stock_fundamentals, DEFAULT_FUNDAMENTALS
 
 logger = logging.getLogger(__name__)
