@@ -382,6 +382,95 @@ def render_mode7():
             "— no Safari URL bar, no bottom navigation chrome, silky 60fps pinch-to-zoom TradingView charts, and persistent biometric dark mode!"
         )
 
+        st.markdown("---")
+        st.markdown("#### 🛠️ Friend Setup Guide: Pure Cloud vs Dedicated Local PC")
+        st.markdown(
+            "Can your friend also run FinVision on their PC and switch back and forth to their phone like you do? "
+            "**Yes!** It depends on whether they want an instant cloud setup or their own physical PC execution engine:"
+        )
+
+        with st.expander("Option 1: Pure Cloud Mode (⚡ 0 Seconds Setup — 100% Instant)", expanded=True):
+            st.markdown(
+                textwrap.dedent("""
+                * **How it works**: Your friend opens `finvision.streamlit.app` on their PC browser (Chrome/Edge/Safari) and on their phone (or iPhone PWA).
+                * **Pros**: Requires **zero installation**, no Python, no Git, and works on low-end laptops, Chromebooks, or iPads.
+                * **Switching back and forth**: Instant! They can research and analyze on their desktop monitor, then walk outside and monitor on mobile.
+                * **Setup Required**: None! Simply open the link.
+                """)
+            )
+
+        with st.expander("Option 2: Dedicated Local PC Engine + Cloud Failover (🖥️ 5-Minute Setup)", expanded=True):
+            st.markdown(
+                textwrap.dedent("""
+                If your friend wants their own computer hardware to be the **Execution Leader** (running the 3-minute background scanner, with automated failover when their PC turns off):
+                
+                ##### 📋 5-Minute Setup Instructions:
+                1. **Clone the Repository**:
+                ```bash
+                git clone https://github.com/shriharinair-create/finvision.git
+                cd finvision
+                ```
+                2. **Install Dependencies**:
+                ```bash
+                pip install -r requirements.txt
+                ```
+                3. **Launch Desktop Terminal**:
+                ```bash
+                streamlit run app.py
+                ```
+                4. **Connect Their Own Phone**:
+                   * *Local Wi-Fi*: Connect their phone to their home network and navigate to `http://<THEIR-PC-IP>:8501`.
+                   * *Private Cloud Fork*: They can fork your GitHub repository and deploy their own free instance on [Streamlit Cloud](https://share.streamlit.io) in 2 clicks. That gives them their own private cloud relay tied strictly to their PC's heartbeat!
+                """)
+            )
+
+        st.markdown("---")
+        st.markdown("#### 🔐 Bank-Grade Security & Per-User Credential Vault")
+        st.markdown(
+            "When multiple people use FinVision—especially with real brokerage accounts—**credential security, "
+            "privacy, and financial isolation are non-negotiable**."
+        )
+
+        sec_col1, sec_col2 = st.columns(2)
+        with sec_col1:
+            st.markdown(
+                textwrap.dedent("""
+                <div style="background:#161B22; border:1px solid #30363D; border-radius:8px; padding:14px; height:100%;">
+                    <div style="color:#58A6FF; font-weight:700; font-size:15px; margin-bottom:6px;">👤 Profile PIN & Data Privacy</div>
+                    <div style="font-size:13px; color:#C9D1D9; line-height:1.5;">
+                        • Each user profile is secured by a private <strong>4-to-6 digit PIN</strong>.<br>
+                        • PINs are stored as salted cryptographic hashes (<code>PBKDF2-HMAC-SHA256</code>) — never in plaintext.<br>
+                        • Prevents friends from viewing each other's capital, trade journal, or active positions.
+                    </div>
+                </div>
+                """),
+                unsafe_allow_html=True
+            )
+        with sec_col2:
+            st.markdown(
+                textwrap.dedent("""
+                <div style="background:#161B22; border:1px solid #30363D; border-radius:8px; padding:14px; height:100%;">
+                    <div style="color:#00E676; font-weight:700; font-size:15px; margin-bottom:6px;">🔑 Zero-Knowledge AES-256 Broker Vault</div>
+                    <div style="font-size:13px; color:#C9D1D9; line-height:1.5;">
+                        • Broker API keys (Zerodha Kite, Upstox, Groww) are encrypted at rest with <strong>AES-256-GCM</strong>.<br>
+                        • The decryption key is derived strictly from that <strong>user's personal PIN</strong>.<br>
+                        • Keys exist <strong>only in volatile RAM</strong> during an active session and vanish when the tab is closed.
+                    </div>
+                </div>
+                """),
+                unsafe_allow_html=True
+            )
+
+        st.markdown(
+            textwrap.dedent("""
+            #### 🛡️ Institutional Guardrails & Fail-Safe Protection:
+            * **Simulation Mode Guarantee**: By default, FinVision runs in **100% Risk-Free Paper Trading**. No broker credentials, API keys, or banking details are ever required to simulate trades or test custom watchlists.
+            * **Max Daily Loss Kill-Switch**: If an account drops by more than the user's defined risk limit (e.g. 2% in a day), all automated trading is permanently halted for the day.
+            * **Per-Order Capital Caps**: Hard ceiling on the maximum ₹ amount deployed per trade to prevent fat-finger or sizing errors.
+            * **Local PC Isolation**: When your friend runs Option 2 on their own PC, their broker credentials **never leave their machine**—they stay strictly on `localhost` without ever touching the cloud or your server.
+            """)
+        )
+
     # ── TAB 5: BSE & Dual-Exchange ────────────────────────────────────────────
     with tabs[4]:
         st.markdown("### 🏛️ First-Class BSE (Bombay Stock Exchange) Support")
