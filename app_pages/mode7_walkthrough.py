@@ -177,6 +177,55 @@ def render_mode7():
                 """)
             )
 
+        with st.expander("6. 🎯 The 3 Autonomous & Assisted Ways to Trade", expanded=True):
+            st.markdown(
+                textwrap.dedent("""
+                FinVision supports three distinct execution workflows tailored to different trader preferences:
+                
+                #### 1️⃣ Way 1: Full AI Autopilot (Hands-Free Dalal Street Radar)
+                * **How to use**: In the Auto-Trader Cockpit settings, select `🤖 Full AI Autopilot (Nifty 500 Radar)` and toggle Auto-Trade ON.
+                * **Who decides what**: The AI scans 500+ Indian equities, checks Lopez de Prado win probability (>55%), sizes to your 1% risk rule, and handles entry, trailing stop-losses, and profit exits automatically.
+                * **Best for**: Traders who want a disciplined, emotions-free quantitative assistant running in the background.
+
+                #### 2️⃣ Way 2: Targeted Watchlist (You Pick Stocks — AI Decides Timing)
+                * **How to use**: In Cockpit settings, select `🎯 Custom Watchlist (My Stocks Only)` and enter your tickers (e.g. `TATAMOTORS, INFY, RELIANCE, HDFCBANK`).
+                * **Who decides what**: You specify the stocks you believe in. The AI ignores the rest of Dalal Street, monitors your tickers' 15-minute candles and volume flow, and executes only when an institutional breakout forms.
+                * **Best for**: Sector specialists, portfolio builders, or traders with a favorite stock basket.
+
+                #### 3️⃣ Way 3: Custom Bracket Queue (You Pick Stocks & Exact Prices — AI Executes)
+                * **How to use**: Expand `⚡ Queue Custom Bracket Order` directly in the Copilot. Enter your stock, exact Entry Price (e.g. ₹980), Target Price (₹1020), and Stop Loss (₹960).
+                * **Who decides what**: You define your exact trade plan. The Auto-Trader background daemon takes custody, monitoring live market ticks every 3 minutes and executing the exit automatically when Target or Stop Loss is reached!
+                * **Best for**: Executing mentor tips, chartist levels, or planned swing setups without sitting in front of the screen.
+                """)
+            )
+
+        with st.expander("7. ⏱️ Why the 3-Minute Scanner Frequency is the Institutional Sweet Spot", expanded=True):
+            st.markdown(
+                textwrap.dedent("""
+                #### ❓ Does scanning every 3 minutes cause you to miss good deals?
+                **No.** In quantitative trading, a 3-minute aggregation cycle is the proven institutional standard for retail and prop desks. Here is why:
+
+                1. **Candle Alignment (15-Minute & 1-Hour Waves)**:
+                   * FinVision's intraday momentum models trade **15-minute and 1-hour candle structures**.
+                   * A 15-minute candle takes 900 seconds to form. A 3-minute scanner evaluates the candle **5 separate times** while it develops!
+                   * Real institutional breakouts and accumulation unfold over **15 to 45 minutes**, not in 10 seconds. You are never late to a sustainable move.
+                
+                2. **The "Noise vs Signal" Trap (Avoiding Fake Wicks)**:
+                   * Scanning every 5 or 10 seconds traps retail traders in **"False Wick Chasing"**: algorithms frequently spike a stock for 30 seconds to trigger retail breakout orders, only to dump it back down before the candle closes.
+                   * A 3-minute window allows tick volume to settle, confirming whether buying pressure is genuine institutional accumulation or spoofed noise.
+                
+                3. **Microsecond Execution via GTT Limits**:
+                   * You do **not** rely on scanner polling speed to exit trades!
+                   * FinVision calculates exchange-native **Good-Till-Triggered (GTT) OCO bracket orders** with pre-calculated tick buffers.
+                   * Once parked on the exchange matching engine (Zerodha/Upstox), **your order triggers at 0-millisecond speed** the instant price touches your level.
+                
+                4. **Exchange & Broker Rate Limit Safety**:
+                   * Discount brokers (Zerodha Kite, Upstox) strictly enforce API rate limits (typically 3 requests/sec).
+                   * Polling 500 stocks every 10 seconds fires 3,000 requests per minute—guaranteeing HTTP 429 rate-limit blocks or IP bans.
+                   * A 3-minute cycle ensures 100% compliance, zero server crashes, and minimal battery drain on mobile phones.
+                """)
+            )
+
     # ── TAB 3: Cross-Device & Auto-Failover ───────────────────────────────────
     with tabs[2]:
         st.markdown("### 📱 Cross-Device Synchronisation & Automated Failover")
