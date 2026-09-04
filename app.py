@@ -34,6 +34,7 @@ from app_pages.mode4_forecast import render_mode4
 from app_pages.mode5_wealth import render_mode5
 from app_pages.mode6_academy import render_mode6
 from app_pages.mode7_walkthrough import render_mode7
+from app_pages.mode_settings import render_mode_settings
 from utils.user_prefs import get_user_preferences, save_user_preference
 
 inject_css()
@@ -86,6 +87,7 @@ if _sm:
 
 mode_options = [
     "🤖  Smart Copilot (0-Knowledge Autopilot)",
+    "⚙️  Settings & Cloud Backup Hub",
     "📡  Market Scanner & Top 10 Alpha",
     "🌱  Long-Term Wealth & Compounder Lab",
     "⚡  Live Intraday Monitor",
@@ -172,6 +174,10 @@ with st.sidebar:
     except Exception:
         pass
 
+    if st.sidebar.button("⚙️ Settings & Cloud Backup", key="sidebar_settings_btn", use_container_width=True):
+        st.session_state["top_bar_mode_select"] = "⚙️  Settings & Cloud Backup Hub"
+        st.rerun()
+
     st.divider()
 
     st.markdown("### Position Sizing & Budget")
@@ -197,6 +203,8 @@ with st.sidebar:
 
 if mode.startswith("🤖"):
     render_mode0()
+elif mode.startswith("⚙️"):
+    render_mode_settings()
 elif mode.startswith("📡"):
     watchlist, watchlist_status = load_nifty500_watchlist()
     render_mode2(watchlist, watchlist_status)

@@ -29,7 +29,15 @@ from utils.fundamental_wealth import (
     BLUE_CHIP_COMPOUNDERS,
 )
 from utils.risk import compute_position_size
-from utils.market_store import log_paper_trade, log_regime_snapshot, get_stock_adaptive_buffer, save_veteran_rule, get_veteran_rules
+from utils.market_store import (
+    log_paper_trade,
+    log_regime_snapshot,
+    get_stock_adaptive_buffer,
+    save_veteran_rule,
+    get_veteran_rules,
+    close_paper_trade,
+    log_trade_postmortem,
+)
 from utils.components import render_eli5_box, esc
 from utils.regime import detect_indian_market_regime
 from utils.meta_labeling import evaluate_meta_labeling_filter
@@ -47,6 +55,7 @@ from utils.auto_trader import (
     get_auto_trader_learnings,
     get_active_auto_trades,
     is_indian_market_open_or_simulated,
+    diagnose_trade_postmortem,
 )
 from utils.bse_helper import resolve_indian_ticker, is_bse_scrip_code
 from utils.bse_corporate import check_corporate_event_risk
@@ -130,13 +139,251 @@ def render_mode0():
         unsafe_allow_html=True,
     )
 
-    c_walk_btn, c_walk_txt = st.columns([1.5, 3])
-    with c_walk_btn:
+    # ── Top Action Buttons: Settings & Guide ──────────────────────────────────
+    c_act_settings, c_act_walk = st.columns(2)
+    with c_act_settings:
+        if st.button("⚙️ Settings & Cloud Backup Hub", key="mode0_top_settings_btn", use_container_width=True):
+            st.session_state["top_bar_mode_select"] = "⚙️  Settings & Cloud Backup Hub"
+            st.rerun()
+    with c_act_walk:
         if st.button("📖 App Walkthrough & User Guide", key="copilot_open_walkthrough_btn", use_container_width=True):
             st.session_state["target_operating_mode"] = "walkthrough"
             st.rerun()
-    with c_walk_txt:
-        st.caption("💡 New to FinVision? Learn how to execute setups, GTT orders & compounders.")
+
+    # ── 🤖 AUTONOMOUS AUTO-TRADER COCKPIT (PROMINENT AT TOP) ──────────────────
+    top_prefs = get_user_preferences()
+    top_budget = float(st.session_state.get("total_capital", top_prefs.get("total_capital", 500000.0)))
+    top_risk_prof = top_prefs.get("risk_profile", "Balanced (1.0% max risk)")
+    top_risk_pct = float(st.session_state.get("risk_pct", 0.005 if "Conservative" in top_risk_prof else 0.02 if "Active" in top_risk_prof else 0.01))
+
+    auto_cfg = get_auto_trader_config()
+    active_auto_trades = get_active_auto_trades()
+    recent_auto_learnings = get_auto_trader_learnings(limit=6)
+    m_timing = is_indian_market_open_or_simulated()
+    is_at_active = auto_cfg.get("is_enabled", False)
+
+    status_pill = (
+        '<span style="background:#238636;color:#FFF;padding:4px 12px;border-radius:20px;font-weight:700;font-size:12px;">🟢 AUTO-TRADER ACTIVE & SCANNING</span>'
+        if is_at_active
+        else '<span style="background:#30363D;color:#8B949E;padding:4px 12px;border-radius:20px;font-weight:700;font-size:12px;">⚪ AUTO-TRADER STANDBY (OFF)</span>'
+    )
+
+    with st.container():
+        st.markdown(
+            textwrap.dedent(f"""
+            <div style="background: linear-gradient(135deg, #0d1b2a 0%, #161b22 100%); border: 2px solid {'#238636' if is_at_active else '#30363D'}; border-radius: 12px; padding: 16px 20px; margin-bottom: 16px;">
+                <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+                    <div>
+                        <span style="background:#1f6feb; color:#FFF; font-weight:800; font-size:10px; padding:2px 8px; border-radius:12px; letter-spacing:0.5px;">AUTONOMOUS AI ENGINE</span>
+                        <h3 style="margin:4px 0 2px 0; color:#F0F6FC; font-size:19px;">🤖 FinVision Autonomous Auto-Trader</h3>
+                        <div style="font-size:12px; color:#8B949E;">Scans, sizes, executes, tracks, and conducts post-mortem autopsies autonomously across Day, Swing & Long-Term horizons.</div>
+                    </div>
+                    <div>
+                        {status_pill}
+                    </div>
+                </div>
+            </div>
+            """),
+            unsafe_allow_html=True
+        )
+
+        with st.expander("⚙️ Configure Autonomous Auto-Trader Settings & Toggles", expanded=is_at_active or len(active_auto_trades) > 0):
+            c_at1, c_at2 = st.columns([1, 1])
+            with c_at1:
+                t_master = st.toggle(
+                    "⚡ Auto-Trade Engine Master Switch",
+                    value=is_at_active,
+                    key="toggle_at_master",
+                    help="When ON, the AI will autonomously scan for high-conviction trades, manage sizes via 1% risk rule, and execute without manual intervention."
+                )
+            with c_at2:
+                cur_mode = auto_cfg.get("execution_mode", "SIMULATION")
+                mode_choice = st.radio(
+                    "Execution Mode (Safety Guard)",
+                    options=["🛡️ Safe Simulation (Paper Trading)", "🚀 Live Broker Gateway"],
+                    index=0 if cur_mode == "SIMULATION" else 1,
+                    horizontal=True,
+                    key="radio_at_mode",
+                    help="Simulation records all trades into SQLite with zero real money risk. Live Broker dispatches real orders via official API."
+                )
+                chosen_exec_mode = "SIMULATION" if "Simulation" in mode_choice else "LIVE_BROKER"
+
+            # Horizon Selectors & Risk controls
+            c_h1, c_h2, c_h3 = st.columns([2, 1, 1])
+            with c_h1:
+                cur_horizons_raw = auto_cfg.get("enabled_horizons", "DAY_TRADE,SWING_TRADE,LONG_TERM")
+                horizon_options = ["⚡ Day Trading (Intraday)", "🔭 Multi-Day Swing Trading", "🌱 Long-Term Compounding"]
+                default_sel = []
+                if "DAY_TRADE" in cur_horizons_raw:
+                    default_sel.append("⚡ Day Trading (Intraday)")
+                if "SWING_TRADE" in cur_horizons_raw:
+                    default_sel.append("🔭 Multi-Day Swing Trading")
+                if "LONG_TERM" in cur_horizons_raw:
+                    default_sel.append("🌱 Long-Term Compounding")
+
+                sel_horizons = st.multiselect(
+                    "Target Trading Horizons",
+                    options=horizon_options,
+                    default=default_sel if default_sel else horizon_options,
+                    key="ms_at_horizons",
+                    help="Select which horizons the Auto-Trader is authorized to trade."
+                )
+            with c_h2:
+                max_pos = st.slider(
+                    "Max Open Positions",
+                    min_value=1,
+                    max_value=5,
+                    value=int(auto_cfg.get("max_concurrent_positions", 3)),
+                    key="slider_at_max_pos",
+                )
+            with c_h3:
+                st.metric("Risk Cap Per Trade", f"{top_risk_pct*100:.1f}%", help="Strictly capped mathematically by the position sizing formula.")
+
+            # Live Broker Details (if Live Broker mode chosen)
+            sel_brk = auto_cfg.get("selected_broker", "Zerodha Kite")
+            wb_url_val = auto_cfg.get("broker_webhook_url", "")
+            if chosen_exec_mode == "LIVE_BROKER":
+                st.warning("⚠️ **Live Trading Active**: Autonomous orders will be dispatched directly to your broker API.")
+                c_brk1, c_brk2 = st.columns(2)
+                with c_brk1:
+                    sel_brk = st.selectbox("Active Broker", SUPPORTED_BROKERS, index=0, key="sel_at_broker")
+                with c_brk2:
+                    wb_url_val = st.text_input("Broker Webhook / API URL", value=wb_url_val, placeholder="https://api.kite.trade/orders", type="password", key="wb_at_url")
+
+            # Save configuration if modified
+            mapped_horizons = []
+            for h in sel_horizons:
+                if "Day" in h:
+                    mapped_horizons.append("DAY_TRADE")
+                if "Swing" in h:
+                    mapped_horizons.append("SWING_TRADE")
+                if "Long-Term" in h:
+                    mapped_horizons.append("LONG_TERM")
+
+            new_cfg = {
+                "is_enabled": t_master,
+                "execution_mode": chosen_exec_mode,
+                "enabled_horizons": ",".join(mapped_horizons) if mapped_horizons else "DAY_TRADE",
+                "max_concurrent_positions": max_pos,
+                "risk_pct_per_trade": top_risk_pct,
+                "allocated_budget": top_budget,
+                "selected_broker": sel_brk,
+                "broker_webhook_url": wb_url_val,
+            }
+
+            if (
+                t_master != is_at_active
+                or chosen_exec_mode != cur_mode
+                or ",".join(mapped_horizons) != cur_horizons_raw
+                or max_pos != int(auto_cfg.get("max_concurrent_positions", 3))
+                or sel_brk != auto_cfg.get("selected_broker")
+                or wb_url_val != auto_cfg.get("broker_webhook_url")
+            ):
+                save_auto_trader_config(new_cfg)
+                st.toast("💾 Auto-Trader settings updated and saved!", icon="🤖")
+
+            c_run_act, c_run_info = st.columns([2, 3])
+            with c_run_act:
+                if st.button("🔄 Trigger Auto-Trade Cycle Now", key="btn_run_at_cycle", use_container_width=True):
+                    with st.spinner("🤖 Auto-Trader is monitoring positions and scanning for high-conviction entries..."):
+                        cycle_report = run_auto_trade_cycle(user_budget=top_budget, risk_pct=top_risk_pct)
+                    
+                    num_closed = len(cycle_report.get("closed_in_cycle", []))
+                    num_entered = len(cycle_report.get("new_entries", []))
+                    if num_closed > 0 or num_entered > 0:
+                        st.success(f"🎯 Cycle Complete: {num_entered} new trade(s) entered, {num_closed} position(s) exited & diagnosed.")
+                    else:
+                        st.info("ℹ️ Auto-Trade scan complete: Positions monitored, no new trade triggered (within risk/conviction thresholds).")
+                    st.rerun()
+            with c_run_info:
+                st.caption(f"🕒 Indian Market Time: **{m_timing['ist_time']}** · Market Active: **{'Yes ✅' if m_timing['is_market_open'] else 'Closed / Simulation Mode 🛡️'}**")
+
+        # Active Auto-Traded Positions Display
+        if active_auto_trades:
+            st.markdown(f"#### 📊 Active Auto-Trader Positions ({len(active_auto_trades)} of {max_pos} slots used)")
+            for at_pos in active_auto_trades:
+                at_id = at_pos["id"]
+                at_tick = at_pos["ticker"]
+                at_entry = float(at_pos["entry_price"])
+                at_target = float(at_pos["target_price"])
+                at_stop = float(at_pos["stop_loss_price"])
+                at_sh = int(at_pos["shares"])
+                at_val = float(at_pos["position_value"])
+                at_h = at_pos.get("horizon", "DAY_TRADE")
+                at_mode = at_pos.get("execution_mode", "SIMULATION")
+
+                h_badge = (
+                    '<span style="background:#FF980022;color:#FF9800;border:1px solid #FF980044;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;">⚡ DAY</span>'
+                    if at_h == "DAY_TRADE"
+                    else '<span style="background:#58A6FF22;color:#58A6FF;border:1px solid #58A6FF44;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;">🔭 SWING</span>'
+                    if at_h == "SWING_TRADE"
+                    else '<span style="background:#3FB95022;color:#3FB950;border:1px solid #3FB95044;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;">🌱 LONG-TERM</span>'
+                )
+
+                c_pos_info, c_pos_act = st.columns([4, 1])
+                with c_pos_info:
+                    st.markdown(
+                        f"<div style='background:#161B22; border:1px solid #30363D; border-radius:8px; padding:10px 14px; margin-bottom:6px;'>"
+                        f"<div style='display:flex; justify-content:space-between; align-items:center;'>"
+                        f"<span><strong>#{at_id} · {at_tick}</strong> {h_badge} · <strong>{at_sh:,} shares</strong> @ ₹{at_entry:,.2f} (₹{at_val:,.0f} value)</span>"
+                        f"<span style='font-size:11px; color:#8B949E;'>Mode: <strong>{at_mode}</strong></span>"
+                        f"</div>"
+                        f"<div style='display:flex; gap:16px; font-size:11px; margin-top:4px;'>"
+                        f"<span style='color:#58A6FF;'>🎯 Target: ₹{at_target:,.2f} (+{round(((at_target-at_entry)/at_entry)*100, 1)}%)</span>"
+                        f"<span style='color:#F85149;'>🛑 Stop: ₹{at_stop:,.2f} ({round(((at_stop-at_entry)/at_entry)*100, 1)}%)</span>"
+                        f"</div>"
+                        f"</div>",
+                        unsafe_allow_html=True
+                    )
+                with c_pos_act:
+                    if st.button(f"✖ Exit #{at_id}", key=f"btn_man_exit_{at_id}", use_container_width=True):
+                        close_paper_trade(at_id, at_entry, "MANUAL_EXIT")
+                        pm = diagnose_trade_postmortem(at_tick, at_pos["trade_type"], at_entry, at_target, at_stop, at_entry, "MANUAL_EXIT")
+                        pm["trade_id"] = at_id
+                        log_trade_postmortem(pm)
+                        st.toast(f"Position #{at_id} ({at_tick}) squared off manually.", icon="✖")
+                        st.rerun()
+
+        # ── 🧠 Auto-Trader Brain & Learning Feed ("What Went Right vs Mistakes Made") ──
+        with st.expander("🧠 Auto-Trader Brain Activity & Continuous Self-Learning Feed", expanded=bool(recent_auto_learnings)):
+            if not recent_auto_learnings:
+                st.info("No auto-trade autopsies logged yet. As the Auto-Trader exits trades, its diagnoses ('What went right' vs 'Mistakes made' & adaptive parameter updates) will appear here in real-time.")
+            else:
+                for l in recent_auto_learnings:
+                    is_profit = float(l.get("pnl_amount", 0)) > 0
+                    pnl_color = "#3FB950" if is_profit else "#F85149"
+                    diag = l.get("diagnosis_code", "UNKNOWN")
+                    h_label = l.get("horizon", "DAY_TRADE").replace("_", " ")
+
+                    st.markdown(
+                        textwrap.dedent(f"""
+                        <div style="background:#0D1117; border-left:4px solid {pnl_color}; border-radius:6px; padding:10px 14px; margin-bottom:8px; border-top:1px solid #21262D; border-right:1px solid #21262D; border-bottom:1px solid #21262D;">
+                            <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap;">
+                                <div>
+                                    <span style="font-weight:800; font-size:12px; color:#F0F6FC;">{l.get('ticker')}</span>
+                                    <span style="font-size:10px; background:#161B22; color:#8B949E; padding:1px 6px; border-radius:4px; margin-left:6px;">{h_label}</span>
+                                    <span style="font-size:10px; background:#21262D; color:{pnl_color}; padding:1px 6px; border-radius:4px; margin-left:4px; font-weight:700;">{l.get('outcome')}</span>
+                                </div>
+                                <div style="font-family:var(--mono); font-weight:800; color:{pnl_color}; font-size:12px;">
+                                    {'+' if is_profit else ''}₹{float(l.get('pnl_amount', 0)):,.0f} ({float(l.get('pnl_pct', 0)):+.2f}%)
+                                </div>
+                            </div>
+                            <div style="font-size:11px; color:#E6EDF3; margin-top:4px;">
+                                <strong>Diagnosis:</strong> <code style="color:#58A6FF;">{diag}</code> · {l.get('root_cause')}
+                            </div>
+                            <div style="display:grid; grid-template-columns: 1fr 1fr; gap:8px; font-size:11px; margin-top:6px; background:#161B22; padding:6px 10px; border-radius:4px;">
+                                <div><span style="color:#3FB950; font-weight:700;">✅ What Went Right:</span> {l.get('what_went_right')}</div>
+                                <div><span style="color:#F85149; font-weight:700;">⚠️ Mistakes / Attribution:</span> {l.get('mistakes_made')}</div>
+                            </div>
+                            <div style="font-size:10px; color:#58A6FF; margin-top:4px;">
+                                🔧 <strong>Adaptive Learning Action:</strong> {l.get('corrective_action')} (Stop Buffer: {l.get('buffer_multiplier', 1.0)}x)
+                            </div>
+                        </div>
+                        """),
+                        unsafe_allow_html=True
+                    )
+
+    st.divider()
 
     # ── AI Market Season & Regime Radar ──────────────────────────────────────
     market_regime = detect_indian_market_regime()
@@ -396,237 +643,7 @@ def render_mode0():
             v_m3.metric("Profit Factor", f"{v_res['profit_factor']:.2f}×")
             v_m4.metric("Avg Return / Trade", f"{v_res['avg_return_pct']:+.2f}%")
 
-    st.divider()
 
-    # ── 🤖 AUTONOMOUS AUTO-TRADER COCKPIT ─────────────────────────────────────
-    auto_cfg = get_auto_trader_config()
-    active_auto_trades = get_active_auto_trades()
-    recent_auto_learnings = get_auto_trader_learnings(limit=6)
-    m_timing = is_indian_market_open_or_simulated()
-    is_at_active = auto_cfg.get("is_enabled", False)
-
-    status_pill = (
-        '<span style="background:#238636;color:#FFF;padding:4px 12px;border-radius:20px;font-weight:700;font-size:12px;">🟢 AUTO-TRADER ACTIVE & SCANNING</span>'
-        if is_at_active
-        else '<span style="background:#30363D;color:#8B949E;padding:4px 12px;border-radius:20px;font-weight:700;font-size:12px;">⚪ AUTO-TRADER STANDBY (OFF)</span>'
-    )
-
-    with st.container():
-        st.markdown(
-            textwrap.dedent(f"""
-            <div style="background: linear-gradient(135deg, #0d1b2a 0%, #161b22 100%); border: 2px solid {'#238636' if is_at_active else '#30363D'}; border-radius: 12px; padding: 16px 20px; margin-bottom: 16px;">
-                <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
-                    <div>
-                        <span style="background:#1f6feb; color:#FFF; font-weight:800; font-size:10px; padding:2px 8px; border-radius:12px; letter-spacing:0.5px;">AUTONOMOUS AI ENGINE</span>
-                        <h3 style="margin:4px 0 2px 0; color:#F0F6FC; font-size:19px;">🤖 FinVision Autonomous Auto-Trader</h3>
-                        <div style="font-size:12px; color:#8B949E;">Scans, sizes, executes, tracks, and conducts post-mortem autopsies autonomously across Day, Swing & Long-Term horizons.</div>
-                    </div>
-                    <div>
-                        {status_pill}
-                    </div>
-                </div>
-            </div>
-            """),
-            unsafe_allow_html=True
-        )
-
-        with st.expander("⚙️ Configure Autonomous Auto-Trader Settings & Toggles", expanded=is_at_active or len(active_auto_trades) > 0):
-            c_at1, c_at2 = st.columns([1, 1])
-            with c_at1:
-                t_master = st.toggle(
-                    "⚡ Auto-Trade Engine Master Switch",
-                    value=is_at_active,
-                    key="toggle_at_master",
-                    help="When ON, the AI will autonomously scan for high-conviction trades, manage sizes via 1% risk rule, and execute without manual intervention."
-                )
-            with c_at2:
-                cur_mode = auto_cfg.get("execution_mode", "SIMULATION")
-                mode_choice = st.radio(
-                    "Execution Mode (Safety Guard)",
-                    options=["🛡️ Safe Simulation (Paper Trading)", "🚀 Live Broker Gateway"],
-                    index=0 if cur_mode == "SIMULATION" else 1,
-                    horizontal=True,
-                    key="radio_at_mode",
-                    help="Simulation records all trades into SQLite with zero real money risk. Live Broker dispatches real orders via official API."
-                )
-                chosen_exec_mode = "SIMULATION" if "Simulation" in mode_choice else "LIVE_BROKER"
-
-            # Horizon Selectors & Risk controls
-            c_h1, c_h2, c_h3 = st.columns([2, 1, 1])
-            with c_h1:
-                cur_horizons_raw = auto_cfg.get("enabled_horizons", "DAY_TRADE,SWING_TRADE,LONG_TERM")
-                horizon_options = ["⚡ Day Trading (Intraday)", "🔭 Multi-Day Swing Trading", "🌱 Long-Term Compounding"]
-                default_sel = []
-                if "DAY_TRADE" in cur_horizons_raw:
-                    default_sel.append("⚡ Day Trading (Intraday)")
-                if "SWING_TRADE" in cur_horizons_raw:
-                    default_sel.append("🔭 Multi-Day Swing Trading")
-                if "LONG_TERM" in cur_horizons_raw:
-                    default_sel.append("🌱 Long-Term Compounding")
-
-                sel_horizons = st.multiselect(
-                    "Target Trading Horizons",
-                    options=horizon_options,
-                    default=default_sel if default_sel else horizon_options,
-                    key="ms_at_horizons",
-                    help="Select which horizons the Auto-Trader is authorized to trade."
-                )
-            with c_h2:
-                max_pos = st.slider(
-                    "Max Open Positions",
-                    min_value=1,
-                    max_value=5,
-                    value=int(auto_cfg.get("max_concurrent_positions", 3)),
-                    key="slider_at_max_pos",
-                )
-            with c_h3:
-                st.metric("Risk Cap Per Trade", f"{risk_pct*100:.1f}%", help="Strictly capped mathematically by the position sizing formula.")
-
-            # Live Broker Details (if Live Broker mode chosen)
-            sel_brk = auto_cfg.get("selected_broker", "Zerodha Kite")
-            wb_url_val = auto_cfg.get("broker_webhook_url", "")
-            if chosen_exec_mode == "LIVE_BROKER":
-                st.warning("⚠️ **Live Trading Active**: Autonomous orders will be dispatched directly to your broker API.")
-                c_brk1, c_brk2 = st.columns(2)
-                with c_brk1:
-                    sel_brk = st.selectbox("Active Broker", SUPPORTED_BROKERS, index=0, key="sel_at_broker")
-                with c_brk2:
-                    wb_url_val = st.text_input("Broker Webhook / API URL", value=wb_url_val, placeholder="https://api.kite.trade/orders", type="password", key="wb_at_url")
-
-            # Save configuration if modified
-            mapped_horizons = []
-            for h in sel_horizons:
-                if "Day" in h:
-                    mapped_horizons.append("DAY_TRADE")
-                if "Swing" in h:
-                    mapped_horizons.append("SWING_TRADE")
-                if "Long-Term" in h:
-                    mapped_horizons.append("LONG_TERM")
-
-            new_cfg = {
-                "is_enabled": t_master,
-                "execution_mode": chosen_exec_mode,
-                "enabled_horizons": ",".join(mapped_horizons) if mapped_horizons else "DAY_TRADE",
-                "max_concurrent_positions": max_pos,
-                "risk_pct_per_trade": risk_pct,
-                "allocated_budget": user_budget,
-                "selected_broker": sel_brk,
-                "broker_webhook_url": wb_url_val,
-            }
-
-            if (
-                t_master != is_at_active
-                or chosen_exec_mode != cur_mode
-                or ",".join(mapped_horizons) != cur_horizons_raw
-                or max_pos != int(auto_cfg.get("max_concurrent_positions", 3))
-                or sel_brk != auto_cfg.get("selected_broker")
-                or wb_url_val != auto_cfg.get("broker_webhook_url")
-            ):
-                save_auto_trader_config(new_cfg)
-                st.toast("💾 Auto-Trader settings updated and saved!", icon="🤖")
-
-            c_run_act, c_run_info = st.columns([2, 3])
-            with c_run_act:
-                if st.button("🔄 Trigger Auto-Trade Cycle Now", key="btn_run_at_cycle", use_container_width=True):
-                    with st.spinner("🤖 Auto-Trader is monitoring positions and scanning for high-conviction entries..."):
-                        cycle_report = run_auto_trade_cycle(user_budget=user_budget, risk_pct=risk_pct)
-                    
-                    num_closed = len(cycle_report.get("closed_in_cycle", []))
-                    num_entered = len(cycle_report.get("new_entries", []))
-                    if num_closed > 0 or num_entered > 0:
-                        st.success(f"🎯 Cycle Complete: {num_entered} new trade(s) entered, {num_closed} position(s) exited & diagnosed.")
-                    else:
-                        st.info("ℹ️ Auto-Trade scan complete: Positions monitored, no new trade triggered (within risk/conviction thresholds).")
-                    st.rerun()
-            with c_run_info:
-                st.caption(f"🕒 Indian Market Time: **{m_timing['ist_time']}** · Market Active: **{'Yes ✅' if m_timing['is_market_open'] else 'Closed / Simulation Mode 🛡️'}**")
-
-        # Active Auto-Traded Positions Display
-        if active_auto_trades:
-            st.markdown(f"#### 📊 Active Auto-Trader Positions ({len(active_auto_trades)} of {max_pos} slots used)")
-            for at_pos in active_auto_trades:
-                at_id = at_pos["id"]
-                at_tick = at_pos["ticker"]
-                at_entry = float(at_pos["entry_price"])
-                at_target = float(at_pos["target_price"])
-                at_stop = float(at_pos["stop_loss_price"])
-                at_sh = int(at_pos["shares"])
-                at_val = float(at_pos["position_value"])
-                at_h = at_pos.get("horizon", "DAY_TRADE")
-                at_mode = at_pos.get("execution_mode", "SIMULATION")
-
-                h_badge = (
-                    '<span style="background:#FF980022;color:#FF9800;border:1px solid #FF980044;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;">⚡ DAY</span>'
-                    if at_h == "DAY_TRADE"
-                    else '<span style="background:#58A6FF22;color:#58A6FF;border:1px solid #58A6FF44;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;">🔭 SWING</span>'
-                    if at_h == "SWING_TRADE"
-                    else '<span style="background:#3FB95022;color:#3FB950;border:1px solid #3FB95044;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;">🌱 LONG-TERM</span>'
-                )
-
-                c_pos_info, c_pos_act = st.columns([4, 1])
-                with c_pos_info:
-                    st.markdown(
-                        f"<div style='background:#161B22; border:1px solid #30363D; border-radius:8px; padding:10px 14px; margin-bottom:6px;'>"
-                        f"<div style='display:flex; justify-content:space-between; align-items:center;'>"
-                        f"<span><strong>#{at_id} · {at_tick}</strong> {h_badge} · <strong>{at_sh:,} shares</strong> @ ₹{at_entry:,.2f} (₹{at_val:,.0f} value)</span>"
-                        f"<span style='font-size:11px; color:#8B949E;'>Mode: <strong>{at_mode}</strong></span>"
-                        f"</div>"
-                        f"<div style='display:flex; gap:16px; font-size:11px; margin-top:4px;'>"
-                        f"<span style='color:#58A6FF;'>🎯 Target: ₹{at_target:,.2f} (+{round(((at_target-at_entry)/at_entry)*100, 1)}%)</span>"
-                        f"<span style='color:#F85149;'>🛑 Stop: ₹{at_stop:,.2f} ({round(((at_stop-at_entry)/at_entry)*100, 1)}%)</span>"
-                        f"</div>"
-                        f"</div>",
-                        unsafe_allow_html=True
-                    )
-                with c_pos_act:
-                    if st.button(f"✖ Exit #{at_id}", key=f"btn_man_exit_{at_id}", use_container_width=True):
-                        close_paper_trade(at_id, at_entry, "MANUAL_EXIT")
-                        pm = diagnose_trade_postmortem(at_tick, at_pos["trade_type"], at_entry, at_target, at_stop, at_entry, "MANUAL_EXIT")
-                        pm["trade_id"] = at_id
-                        log_trade_postmortem(pm)
-                        st.toast(f"Position #{at_id} ({at_tick}) squared off manually.", icon="✖")
-                        st.rerun()
-
-        # ── 🧠 Auto-Trader Brain & Learning Feed ("What Went Right vs Mistakes Made") ──
-        with st.expander("🧠 Auto-Trader Brain Activity & Continuous Self-Learning Feed", expanded=bool(recent_auto_learnings)):
-            if not recent_auto_learnings:
-                st.info("No auto-trade autopsies logged yet. As the Auto-Trader exits trades, its diagnoses ('What went right' vs 'Mistakes made' & adaptive parameter updates) will appear here in real-time.")
-            else:
-                for l in recent_auto_learnings:
-                    is_profit = float(l.get("pnl_amount", 0)) > 0
-                    pnl_color = "#3FB950" if is_profit else "#F85149"
-                    diag = l.get("diagnosis_code", "UNKNOWN")
-                    h_label = l.get("horizon", "DAY_TRADE").replace("_", " ")
-
-                    st.markdown(
-                        textwrap.dedent(f"""
-                        <div style="background:#0D1117; border-left:4px solid {pnl_color}; border-radius:6px; padding:10px 14px; margin-bottom:8px; border-top:1px solid #21262D; border-right:1px solid #21262D; border-bottom:1px solid #21262D;">
-                            <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap;">
-                                <div>
-                                    <span style="font-weight:800; font-size:12px; color:#F0F6FC;">{l.get('ticker')}</span>
-                                    <span style="font-size:10px; background:#161B22; color:#8B949E; padding:1px 6px; border-radius:4px; margin-left:6px;">{h_label}</span>
-                                    <span style="font-size:10px; background:#21262D; color:{pnl_color}; padding:1px 6px; border-radius:4px; margin-left:4px; font-weight:700;">{l.get('outcome')}</span>
-                                </div>
-                                <div style="font-family:var(--mono); font-weight:800; color:{pnl_color}; font-size:12px;">
-                                    {'+' if is_profit else ''}₹{float(l.get('pnl_amount', 0)):,.0f} ({float(l.get('pnl_pct', 0)):+.2f}%)
-                                </div>
-                            </div>
-                            <div style="font-size:11px; color:#E6EDF3; margin-top:4px;">
-                                <strong>Diagnosis:</strong> <code style="color:#58A6FF;">{diag}</code> · {l.get('root_cause')}
-                            </div>
-                            <div style="display:grid; grid-template-columns: 1fr 1fr; gap:8px; font-size:11px; margin-top:6px; background:#161B22; padding:6px 10px; border-radius:4px;">
-                                <div><span style="color:#3FB950; font-weight:700;">✅ What Went Right:</span> {l.get('what_went_right')}</div>
-                                <div><span style="color:#F85149; font-weight:700;">⚠️ Mistakes / Attribution:</span> {l.get('mistakes_made')}</div>
-                            </div>
-                            <div style="font-size:10px; color:#58A6FF; margin-top:4px;">
-                                🔧 <strong>Adaptive Learning Action:</strong> {l.get('corrective_action')} (Stop Buffer: {l.get('buffer_multiplier', 1.0)}x)
-                            </div>
-                        </div>
-                        """),
-                        unsafe_allow_html=True
-                    )
-
-    st.divider()
 
     # ── ⚡ TRACK 1: DAY TRADING & QUICK PROFITS ────────────────────────────────
     if track_choice.startswith("⚡"):
