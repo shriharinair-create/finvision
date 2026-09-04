@@ -36,6 +36,8 @@ def render_mode7():
     tabs = st.tabs([
         "🚀 60-Second Quickstart",
         "🤖 Mode 0: Smart Copilot",
+        "📱 Cross-Device & Auto-Failover",
+        "👥 Multi-User, Friends & iPhone",
         "🏛️ BSE & Dual-Exchange",
         "💰 Tax & GTT Order Math",
         "🌱 Wealth Multiplier",
@@ -175,8 +177,213 @@ def render_mode7():
                 """)
             )
 
-    # ── TAB 3: BSE & Dual-Exchange ────────────────────────────────────────────
+    # ── TAB 3: Cross-Device & Auto-Failover ───────────────────────────────────
     with tabs[2]:
+        st.markdown("### 📱 Cross-Device Synchronisation & Automated Failover")
+        st.markdown(
+            "FinVision's hybrid architecture is engineered for Dalal Street traders who move between "
+            "a multi-monitor PC trading desk and a mobile phone on the go. "
+            "The system uses an **Autonomous Leader / Standby Companion** model to ensure you never miss a setup "
+            "while strictly preventing duplicate trade executions."
+        )
+
+        st.info(
+            "🛡️ **Single-Leader Safety Guarantee**: Even if both your PC and phone are open at the exact same moment, "
+            "only **one device** is authorized as the Execution Leader. All other connected devices act as high-convenience "
+            "telemetry and monitoring consoles."
+        )
+
+        with st.expander("Scenario 1: Starting on PC 🖥️ ➡️ Switching to Phone 📱", expanded=True):
+            st.markdown(
+                textwrap.dedent("""
+                #### 🖥️ Desk to 📱 Mobile Transition Procedure:
+                1. **Morning Market Open (9:15 AM)**: Open FinVision on your PC. In the **Auto-Trader Cockpit**, set your capital, risk %, and toggle Auto-Trade **ON**.
+                2. **Verify Leader Role**: The top banner will display: `🖥️ LEADER: PC (Active & Executing)`. Your PC daemon scans Dalal Street every 3 minutes.
+                3. **Step Away From Your Desk**: Leave your PC running. When you open FinVision on your phone (via mobile browser, Android APK, or iOS PWA), it automatically pulls the latest trade state via Cloud Relay.
+                4. **Mobile Companion Mode**: Your phone displays `📱 COMPANION (Monitoring PC Execution)`. You can monitor live P&L, stop-loss ratchets, and scanner telemetry.
+                5. **Want to Turn Off Your PC?**:
+                   * *Option A (Manual)*: In the Cockpit settings expander, change **Strategy** to `☁️ Cloud 24/7 Primary`. The Cloud engine takes custody; you can now safely shut down your PC.
+                   * *Option B (Automatic)*: Just shut down your PC! FinVision's **Auto-Failover** will detect the missing heartbeat and take over automatically.
+                """)
+            )
+
+        with st.expander("Scenario 2: Starting on Phone 📱 ➡️ Switching to PC 🖥️", expanded=True):
+            st.markdown(
+                textwrap.dedent("""
+                #### 📱 Mobile to 🖥️ Desk Transition Procedure:
+                1. **Morning Commute**: Open FinVision on your phone. Turn Auto-Trader ON. The execution role defaults to `☁️ Cloud 24/7 Primary`. The cloud scans stocks and executes orders.
+                2. **Arrive at Desk**: Power on your PC and launch FinVision (`http://localhost:8501`).
+                3. **Sync State**: Click the **`[☁️ Sync PC & Mobile Now]`** button in the Auto-Trader Cockpit (or let the auto-sync daemon pull within 3 minutes).
+                4. **PC Assumes Leadership**: Your PC detects the cloud session, imports all active positions and trailing stops, and automatically becomes the **`🖥️ LEADER: PC`**.
+                5. **Cloud Demotes to Watchdog**: The cloud node safely steps down to secondary standby to prevent duplicate order placement on Dalal Street.
+                """)
+            )
+
+        with st.expander("Scenario 3: PC Sudden Crash or Power Outage (Automated Failover)", expanded=True):
+            st.markdown(
+                textwrap.dedent("""
+                #### ⚡ Automated Watchdog & Crash Protection:
+                * **Continuous Heartbeat**: While your PC is running, it emits a heartbeat timestamp (`pc_heartbeat_timestamp`) into the sync cloud every 3 minutes.
+                * **Failure Detection**: If your PC crashes, freezes, loses internet, or suffers a power cut, the heartbeat stops updating.
+                * **Automated Takeover**: FinVision's cloud watchdog runs `check_pc_heartbeat_health()`. If no heartbeat is received for **> 8 minutes**, the cloud node automatically promotes itself to:
+                  <div style="background:#1B3A24; border:1px solid #00E676; border-radius:6px; padding:8px 12px; margin:8px 0; color:#00E676; font-weight:700;">
+                      ⚡ AUTO-FAILOVER ACTIVE: PC Offline — Cloud Managing Positions
+                  </div>
+                * **Position Custody**: The cloud immediately assumes control of all open positions, tracks trailing stop triggers, and guarantees strict **3:15 PM Intraday (MIS) Square-Off**.
+                * **Graceful Recovery**: When your PC reboots and reconnects, it detects the cloud's management, pulls the latest exit logs, and reclaims Leader custody smoothly.
+                """),
+                unsafe_allow_html=True
+            )
+
+        with st.expander("Scenario 4: Cloud Server Disruption / Streamlit Reboot", expanded=False):
+            st.markdown(
+                textwrap.dedent("""
+                * All active trades, stop-loss ratchets, and settings are persistently written to SQLite (`db/finvision.db`) and synced as JSON state.
+                * If the Streamlit Cloud container sleeps or restarts, the auto-trader daemon reloads existing open positions from disk on boot.
+                * No trade data or order triggers are lost during container reboots.
+                """)
+            )
+
+        with st.expander("Scenario 5: Zero-Trade Standby Mode ('I do not want to trade today')", expanded=False):
+            st.markdown(
+                textwrap.dedent("""
+                * Simply leave the **Master Auto-Trader Switch** in the Cockpit toggled **`OFF`** (or select `Manual Approval Only` in Execution Mode).
+                * The **📡 Live Scanner Radar** will still scan the entire Nifty 500, calculate technical confluences, evaluate Wyckoff structures, and display top trade setups.
+                * **Zero orders** (neither paper nor live broker) will ever be placed until you explicitly toggle the switch ON.
+                """)
+            )
+
+    # ── TAB 4: Multi-User, Friends & iPhone ───────────────────────────────────
+    with tabs[3]:
+        st.markdown("### 👥 Multi-User Architecture, Sharing & iPhone Setup")
+        st.markdown(
+            "FinVision is built to empower both individual quantitative traders and trading syndicates. "
+            "Here is how you can share FinVision with friends, run distinct personal portfolios, and install on iOS."
+        )
+
+        col_s1, col_s2 = st.columns(2)
+        with col_s1:
+            st.markdown(
+                textwrap.dedent("""
+                <div style="background:#161B22; border:1px solid #30363D; border-radius:8px; padding:14px; height:100%;">
+                    <div style="color:#58A6FF; font-weight:700; font-size:15px; margin-bottom:6px;">🔗 Sharing via Cloud Web URL</div>
+                    <div style="font-size:13px; color:#C9D1D9; line-height:1.5;">
+                        Send your friend the live deployment link:<br>
+                        <a href="https://finvision-8ysyduhykcish78fnyoxrf.streamlit.app" target="_blank" style="color:#58A6FF; font-weight:700;">
+                            finvision.streamlit.app
+                        </a><br>
+                        They can open it instantly in any web browser on Windows, Mac, Linux, Android, iPad, or iPhone with <strong>zero installation</strong> required!
+                    </div>
+                </div>
+                """),
+                unsafe_allow_html=True
+            )
+        with col_s2:
+            st.markdown(
+                textwrap.dedent("""
+                <div style="background:#161B22; border:1px solid #30363D; border-radius:8px; padding:14px; height:100%;">
+                    <div style="color:#00E676; font-weight:700; font-size:15px; margin-bottom:6px;">🏠 Local Wi-Fi / LAN Sharing</div>
+                    <div style="font-size:13px; color:#C9D1D9; line-height:1.5;">
+                        If your friend is at your home or office on the same Wi-Fi network, they can access your high-speed PC server directly by navigating to:<br>
+                        <code style="color:#00E676;">http://&lt;YOUR-PC-IP&gt;:8501</code><br>
+                        This provides zero-latency access to your local GPU/CPU compute and SQLite database.
+                    </div>
+                </div>
+                """),
+                unsafe_allow_html=True
+            )
+
+        st.markdown("---")
+        st.markdown("#### 🧠 Multi-User Feasibility: Isolated Wallets with Shared Collective AI")
+        st.info(
+            "💡 **Can multiple friends trade independently with separate settings while sharing AI learnings?**\n\n"
+            "**YES, 100% FEASIBLE!** In quantitative finance, this is known as **Multi-Tenant Profile Isolation with a Shared Feature Store**."
+        )
+
+        st.markdown(
+            textwrap.dedent("""
+            | Dimension | How It Works in FinVision | Separation Level |
+            | :--- | :--- | :--- |
+            | **Trading Capital & Risk** | User A sets ₹50,000 (1% risk); User B sets ₹5,00,000 (0.5% risk). Sizing math and stops are strictly individual. | 🔒 **100% Isolated** |
+            | **Execution Mode** | User A runs **Paper Simulation**; User B runs **Semi-Auto Manual**; User C connects **Live Zerodha/Groww API**. | 🔒 **100% Isolated** |
+            | **Stock Whitelist / Universe** | User A lets AI pick any Nifty 500 stock; User B restricts to `TATAMOTORS, INFY, RELIANCE`; User C trades only PSU Banks. | 🔒 **100% Isolated** |
+            | **Portfolio & Trade Journal** | Active positions, P&L history, and GTT trigger logs are isolated per user profile in SQLite (`paper_trades WHERE user_id = ?`). | 🔒 **100% Isolated** |
+            | **AI Forensic Autopsies** | When User A gets wicked out by a stop-hunt on Tata Motors, the AI widens the **Adaptive ATR Multiplier** ($1.0\\text{x} \\rightarrow 1.35\\text{x}$) in the shared knowledge base. | 🌐 **Shared Collective Edge** |
+            | **Causal News & Market Regime** | Real-time RBI rate analysis, crude oil shocks, and Wyckoff market regimes are computed once and guide all users simultaneously. | 🌐 **Shared Collective Edge** |
+            """)
+        )
+
+        st.markdown(
+            "> 🤝 **The Collective Advantage**: Each user's private capital and stock selections remain strictly their own, "
+            "but every mistake or market anomaly encountered by one user enriches the AI's forensic memory, making the trading engine "
+            "smarter for everyone in your syndicate!"
+        )
+
+        st.markdown("---")
+        st.markdown("#### 🍏 iPhone & iOS Setup Guide (Native PWA Mode)")
+        st.markdown(
+            "Apple does not allow side-loading APKs, but FinVision is fully engineered as an **iOS Progressive Web App (PWA)**. "
+            "Your friends on iPhone can install FinVision as a native home-screen app in 30 seconds:"
+        )
+
+        col_i1, col_i2, col_i3, col_i4 = st.columns(4)
+        with col_i1:
+            st.markdown(
+                textwrap.dedent("""
+                <div style="background:#161B22; border:1px solid #30363D; border-radius:8px; padding:12px; height:100%;">
+                    <div style="font-size:20px; font-weight:700; color:#58A6FF;">Step 1</div>
+                    <div style="font-size:12px; color:#C9D1D9; margin-top:6px;">
+                        Open <strong>Safari</strong> on your iPhone and navigate to:<br>
+                        <code>finvision.streamlit.app</code>
+                    </div>
+                </div>
+                """),
+                unsafe_allow_html=True
+            )
+        with col_i2:
+            st.markdown(
+                textwrap.dedent("""
+                <div style="background:#161B22; border:1px solid #30363D; border-radius:8px; padding:12px; height:100%;">
+                    <div style="font-size:20px; font-weight:700; color:#00E676;">Step 2</div>
+                    <div style="font-size:12px; color:#C9D1D9; margin-top:6px;">
+                        Tap the <strong>Share</strong> button at the bottom of the screen (the square with an arrow pointing upward).
+                    </div>
+                </div>
+                """),
+                unsafe_allow_html=True
+            )
+        with col_i3:
+            st.markdown(
+                textwrap.dedent("""
+                <div style="background:#161B22; border:1px solid #30363D; border-radius:8px; padding:12px; height:100%;">
+                    <div style="font-size:20px; font-weight:700; color:#FFB300;">Step 3</div>
+                    <div style="font-size:12px; color:#C9D1D9; margin-top:6px;">
+                        Scroll down the share sheet and tap <strong>"Add to Home Screen"</strong> (with the <code>[+]</code> icon).
+                    </div>
+                </div>
+                """),
+                unsafe_allow_html=True
+            )
+        with col_i4:
+            st.markdown(
+                textwrap.dedent("""
+                <div style="background:#161B22; border:1px solid #30363D; border-radius:8px; padding:12px; height:100%;">
+                    <div style="font-size:20px; font-weight:700; color:#F85149;">Step 4</div>
+                    <div style="font-size:12px; color:#C9D1D9; margin-top:6px;">
+                        Confirm the name as <strong>FinVision</strong> and tap <strong>Add</strong> in the top-right corner. Done!
+                    </div>
+                </div>
+                """),
+                unsafe_allow_html=True
+            )
+
+        st.caption(
+            "✨ **Why the iOS PWA is awesome**: When launched from the iPhone home screen, FinVision opens in full-screen standalone mode "
+            "— no Safari URL bar, no bottom navigation chrome, silky 60fps pinch-to-zoom TradingView charts, and persistent biometric dark mode!"
+        )
+
+    # ── TAB 5: BSE & Dual-Exchange ────────────────────────────────────────────
+    with tabs[4]:
         st.markdown("### 🏛️ First-Class BSE (Bombay Stock Exchange) Support")
         st.markdown(
             "FinVision treats BSE as an equal institutional partner alongside NSE, "
@@ -235,8 +442,8 @@ def render_mode7():
                 unsafe_allow_html=True
             )
 
-    # ── TAB 4: Tax & GTT Order Math ───────────────────────────────────────────
-    with tabs[3]:
+    # ── TAB 6: Tax & GTT Order Math ───────────────────────────────────────────
+    with tabs[5]:
         st.markdown("### 💰 Indian Tax Friction & Automated GTT Math")
 
         st.markdown("#### 1. Indian Statutory Friction Engine")
@@ -282,8 +489,8 @@ def render_mode7():
         )
         st.caption("Simply click the copy icon inside the GTT box and paste directly into Zerodha Kite, Groww, or Upstox.")
 
-    # ── TAB 5: Wealth Multiplier ──────────────────────────────────────────────
-    with tabs[4]:
+    # ── TAB 7: Wealth Multiplier ──────────────────────────────────────────────
+    with tabs[6]:
         st.markdown("### 🌱 Mode 5: Long-Term Wealth & Multi-Bagger Compounder Lab")
         st.markdown(
             "Day trading generates cash flow; long-term investing creates generational wealth. "
@@ -305,8 +512,8 @@ def render_mode7():
             "in top compounders at 18% CAGR accumulates into multi-crore wealth over 10 to 15 years."
         )
 
-    # ── TAB 6: AI Autopsy & Academy ───────────────────────────────────────────
-    with tabs[5]:
+    # ── TAB 8: AI Autopsy & Academy ───────────────────────────────────────────
+    with tabs[7]:
         st.markdown("### 🎓 Mode 6: AI Academy & Post-Mortem Autopsy Lab")
         st.markdown(
             "Most trading systems never learn from their mistakes. FinVision continuously evolves "
@@ -338,8 +545,8 @@ def render_mode7():
             "If it fails, the unbacked folklore is debunked with hard data."
         )
 
-    # ── TAB 7: API & MCP Servers ──────────────────────────────────────────────
-    with tabs[6]:
+    # ── TAB 9: API & MCP Servers ──────────────────────────────────────────────
+    with tabs[8]:
         st.markdown("### 🔌 API Server & Model Context Protocol (MCP)")
         st.markdown(
             "FinVision is a headless quantitative engine that can be accessed from external automation tools, "
