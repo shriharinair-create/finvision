@@ -237,6 +237,33 @@ def init_db() -> None:
             )
         """)
 
+        # 12. Cloud Drive Backup & Recovery Settings
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS cloud_backup_settings (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                backup_frequency TEXT DEFAULT 'DAILY', -- 'OFF', 'DAILY', 'WEEKLY', 'MONTHLY', 'MANUAL'
+                retention_count INTEGER DEFAULT 7,
+                storage_provider TEXT DEFAULT 'GOOGLE_DRIVE', -- 'GOOGLE_DRIVE', 'LOCAL_ONLY'
+                google_drive_folder_name TEXT DEFAULT 'FinVision_Backups',
+                google_drive_webhook_url TEXT DEFAULT '',
+                google_drive_access_token TEXT DEFAULT '',
+                last_backup_timestamp TEXT,
+                last_backup_status TEXT DEFAULT 'STANDBY',
+                last_backup_file_name TEXT,
+                last_backup_size_bytes INTEGER DEFAULT 0,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # Seed default cloud_backup_settings row if not present
+        cursor.execute("""
+            INSERT OR IGNORE INTO cloud_backup_settings (
+                id, backup_frequency, retention_count, storage_provider,
+                google_drive_folder_name, google_drive_webhook_url, google_drive_access_token,
+                last_backup_status
+            ) VALUES (1, 'DAILY', 7, 'GOOGLE_DRIVE', 'FinVision_Backups', '', '', 'STANDBY')
+        """)
+
         # Migration: Ensure paper_trades has auto-trade tracking columns
         for col_def in [
             ("is_auto_trade", "INTEGER DEFAULT 0"),
@@ -837,6 +864,70 @@ def get_active_auto_trades() -> list[dict[str, Any]]:
             ORDER BY id DESC
         """)
         return [dict(r) for r in cursor.fetchall()]
+
+
+# ── Cloud Drive Backup Settings Helpers ────────────────────────────────────────
+
+def get_cloud_backup_settings() -> dict[str, Any]:
+    """Fetches the persisted cloud backup configuration."""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM cloud_backup_settings WHERE id = 1")
+        row = cursor.fetchone()
+        if not row:
+            return {
+                "backup_frequency": "DAILY",
+                "retention_count": 7,
+                "storage_provider": "GOOGLE_DRIVE",
+                "google_drive_folder_name": "FinVision_Backups",
+                "google_drive_webhook_url": "",
+                "google_drive_access_token": "",
+                "last_backup_timestamp": None,
+                "last_backup_status": "STANDBY",
+                "last_backup_file_name": None,
+                "last_backup_size_bytes": 0,
+            }
+        return dict(row)
+
+
+def save_cloud_backup_settings(config: dict[str, Any]) -> bool:
+    """Updates the persisted cloud backup configuration."""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO cloud_backup_settings (
+                id, backup_frequency, retention_count, storage_provider,
+                google_drive_folder_name, google_drive_webhook_url, google_drive_access_token,
+                last_backup_timestamp, last_backup_status, last_backup_file_name,
+                last_backup_size_bytes, updated_at
+            ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(id) DO UPDATE SET
+                backup_frequency = excluded.backup_frequency,
+                retention_count = excluded.retention_count,
+                storage_provider = excluded.storage_provider,
+                google_drive_folder_name = excluded.google_drive_folder_name,
+                google_drive_webhook_url = excluded.google_drive_webhook_url,
+                google_drive_access_token = excluded.google_drive_access_token,
+                last_backup_timestamp = COALESCE(excluded.last_backup_timestamp, cloud_backup_settings.last_backup_timestamp),
+                last_backup_status = COALESCE(excluded.last_backup_status, cloud_backup_settings.last_backup_status),
+                last_backup_file_name = COALESCE(excluded.last_backup_file_name, cloud_backup_settings.last_backup_file_name),
+                last_backup_size_bytes = COALESCE(excluded.last_backup_size_bytes, cloud_backup_settings.last_backup_size_bytes),
+                updated_at = CURRENT_TIMESTAMP
+        """, (
+            config.get("backup_frequency", "DAILY"),
+            int(config.get("retention_count", 7)),
+            config.get("storage_provider", "GOOGLE_DRIVE"),
+            config.get("google_drive_folder_name", "FinVision_Backups"),
+            config.get("google_drive_webhook_url", ""),
+            config.get("google_drive_access_token", ""),
+            config.get("last_backup_timestamp"),
+            config.get("last_backup_status", "STANDBY"),
+            config.get("last_backup_file_name"),
+            int(config.get("last_backup_size_bytes", 0)),
+        ))
+        conn.commit()
+        return True
+
 
 
 

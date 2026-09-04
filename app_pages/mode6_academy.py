@@ -27,6 +27,16 @@ from utils.market_store import (
 from utils.components import render_eli5_box, esc
 from utils.trade_postmortem import diagnose_trade_postmortem
 from utils.veteran_evaluator import fact_check_veteran_rule
+from utils.drive_backup import (
+    get_cloud_backup_settings,
+    save_cloud_backup_settings,
+    create_backup_archive,
+    run_backup_cycle,
+    restore_from_backup_archive,
+    get_available_backups,
+    get_google_apps_script_template,
+    BACKUP_FOLDER_NAME,
+)
 
 
 ACADEMY_LESSONS = [
@@ -115,10 +125,11 @@ def render_mode6():
     st.markdown("## 🎓 AI Trading Academy & Paper Trading Journal")
     st.caption("Learn the institutional ropes of smart risk management, explore micro-lessons, and test strategies risk-free in your simulated portfolio.")
 
-    tab_journal, tab_evolution, tab_veteran, tab_academy, tab_glossary = st.tabs([
-        "📓 Live Paper Trading Portfolio",
+    tab_journal, tab_evolution, tab_veteran, tab_backup, tab_academy, tab_glossary = st.tabs([
+        "💼 Paper Trading Portfolio",
         "🧠 AI Post-Mortem & Evolution Lab",
         "🎖️ Veteran Wisdom Fact-Check Lab",
+        "💾 Cloud Drive Backup & Recovery",
         "🎓 AI Trading Academy & Lessons",
         "📖 Financial Jargon Translator",
     ])
@@ -400,6 +411,221 @@ def render_mode6():
                 for r in all_rules
             ])
             st.dataframe(df_v, use_container_width=True, hide_index=True)
+
+    # ── TAB 4: CLOUD DRIVE BACKUP & RECOVERY HUB ─────────────────────────────
+    with tab_backup:
+        st.markdown("### 💾 Cloud Drive Backup & Data Recovery Hub")
+        st.caption(
+            "Safeguard all your trade journals, autonomous bot configurations, post-mortem autopsies, and learned stock buffers. "
+            "Backups are stored in an isolated, dedicated folder to prevent cluttering your personal cloud drive."
+        )
+
+        b_cfg = get_cloud_backup_settings()
+
+        # Dedicated Folder & Storage Meter Header
+        st.markdown(
+            f"""
+            <div style="background: linear-gradient(135deg, #0D1B2A 0%, #161B22 100%); border: 1px solid #388BFD; border-radius: 10px; padding: 14px 18px; margin-bottom: 16px;">
+                <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+                    <div>
+                        <span style="background:#238636; color:#FFF; padding:2px 8px; border-radius:12px; font-size:10px; font-weight:700;">📁 ISOLATED CLOUD FOLDER</span>
+                        <h4 style="margin:4px 0 2px 0; color:#F0F6FC; font-size:16px;">Google Drive / {b_cfg.get('google_drive_folder_name', BACKUP_FOLDER_NAME)}/</h4>
+                        <div style="font-size:11px; color:#8B949E;">All backup archives are quarantined in this specific folder to keep your root drive completely clean.</div>
+                    </div>
+                    <div style="text-align:right;">
+                        <div style="font-size:11px; color:#8B949E;">Storage Quota Impact</div>
+                        <div style="font-size:15px; font-weight:800; color:#3FB950;">~1.2 MB / 15,000 MB</div>
+                        <div style="font-size:10px; color:#58A6FF;">(&lt; 0.008% of free Drive space)</div>
+                    </div>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+
+        # Configuration Card
+        c_b1, c_b2, c_b3 = st.columns(3)
+        with c_b1:
+            freq_opts = ["DAILY", "WEEKLY", "MONTHLY", "MANUAL"]
+            cur_f = b_cfg.get("backup_frequency", "DAILY").upper()
+            idx_f = freq_opts.index(cur_f) if cur_f in freq_opts else 0
+            sel_freq = st.selectbox(
+                "⏰ Backup Frequency",
+                options=freq_opts,
+                index=idx_f,
+                format_func=lambda x: f"Daily (Recommended)" if x == "DAILY" else f"Weekly" if x == "WEEKLY" else f"Monthly" if x == "MONTHLY" else "Manual Only",
+                key="sel_backup_freq"
+            )
+        with c_b2:
+            retention_val = st.slider(
+                "📦 Rolling Retention Count",
+                min_value=3,
+                max_value=30,
+                value=int(b_cfg.get("retention_count", 7)),
+                key="slider_backup_retention",
+                help="Automatically prunes older backups beyond this count so your cloud drive never accumulates clutter."
+            )
+        with c_b3:
+            last_ts = b_cfg.get("last_backup_timestamp") or "Never"
+            st.metric("Last Backup", last_ts.split(" ")[0] if " " in last_ts else last_ts, b_cfg.get("last_backup_status", "STANDBY"))
+
+        # Google Drive Integration Settings
+        with st.expander("☁️ Configure Google Drive Connection (Webhook / API)", expanded=not bool(b_cfg.get("google_drive_webhook_url"))):
+            st.markdown(
+                "Connect your personal Google Drive using a zero-setup **Google Apps Script Webhook** (recommended, takes 30 seconds) "
+                "or direct Google Drive API OAuth token."
+            )
+            c_wh1, c_wh2 = st.columns([3, 1])
+            with c_wh1:
+                wh_input = st.text_input(
+                    "Google Drive Webhook URL",
+                    value=b_cfg.get("google_drive_webhook_url", ""),
+                    placeholder="https://script.google.com/macros/s/.../exec",
+                    key="input_drive_wh_url",
+                    help="Paste your Google Apps Script Web App URL here."
+                )
+            with c_wh2:
+                folder_custom = st.text_input(
+                    "Drive Folder Name",
+                    value=b_cfg.get("google_drive_folder_name", BACKUP_FOLDER_NAME),
+                    key="input_drive_folder_name"
+                )
+
+            # Save updated settings if changed
+            if (
+                sel_freq != cur_f
+                or retention_val != int(b_cfg.get("retention_count", 7))
+                or wh_input != b_cfg.get("google_drive_webhook_url", "")
+                or folder_custom != b_cfg.get("google_drive_folder_name", BACKUP_FOLDER_NAME)
+            ):
+                updated_b_cfg = {
+                    **b_cfg,
+                    "backup_frequency": sel_freq,
+                    "retention_count": retention_val,
+                    "google_drive_webhook_url": wh_input,
+                    "google_drive_folder_name": folder_custom,
+                }
+                save_cloud_backup_settings(updated_b_cfg)
+                st.toast("💾 Backup preferences saved!", icon="☁️")
+
+            with st.expander("📋 30-Second Google Drive Setup Instructions (Copy-Paste Script)", expanded=False):
+                st.markdown(
+                    """
+                    1. Open [script.google.com](https://script.google.com) and click **New project**.
+                    2. Replace the blank code with the script below.
+                    3. Click **Deploy > New Deployment > Select type: Web app**.
+                    4. Set **Execute as**: *Me* and **Who has access**: *Anyone*.
+                    5. Click **Deploy**, copy the generated Web App URL, and paste it into the field above!
+                    """
+                )
+                st.code(get_google_apps_script_template(), language="javascript")
+
+        st.divider()
+
+        # Action Buttons: Manual Backup, Download, and Restore
+        c_act1, c_act2, c_act3 = st.columns([2, 2, 3])
+        with c_act1:
+            if st.button("☁️ Run Backup Cycle Now", key="btn_run_backup_now", use_container_width=True):
+                with st.spinner("📦 Compressing database and syncing to Google Drive..."):
+                    b_result = run_backup_cycle()
+                if b_result["status"] in ("SUCCESS", "LOCAL_SAVED"):
+                    st.success(b_result["message"])
+                else:
+                    st.error(b_result["message"])
+                st.rerun()
+
+        with c_act2:
+            # Generate in-memory backup bundle for instant browser download
+            if st.button("📦 Prepare .fvbackup Download", key="btn_prep_download", use_container_width=True):
+                with st.spinner("Preparing archive..."):
+                    arch_path, m_info = create_backup_archive()
+                    with open(arch_path, "rb") as bf:
+                        b_bytes = bf.read()
+                    st.session_state["ready_backup_bytes"] = b_bytes
+                    st.session_state["ready_backup_name"] = arch_path.name
+                st.toast("Archive ready for download!", icon="📥")
+
+            if "ready_backup_bytes" in st.session_state:
+                st.download_button(
+                    label=f"📥 Download {st.session_state.get('ready_backup_name', 'backup.fvbackup')}",
+                    data=st.session_state["ready_backup_bytes"],
+                    file_name=st.session_state.get("ready_backup_name", "finvision_backup.fvbackup"),
+                    mime="application/zip",
+                    use_container_width=True,
+                    key="btn_do_download"
+                )
+
+        with c_act3:
+            with st.expander("📤 Restore Database from File"):
+                uploaded_b = st.file_uploader(
+                    "Upload .fvbackup, .zip, or .db snapshot",
+                    type=["fvbackup", "zip", "db"],
+                    key="uploader_restore_file"
+                )
+                if uploaded_b is not None:
+                    st.warning("⚠️ **Safety Notice**: Restoring will replace your active database with the uploaded backup. A safety rollback snapshot will be automatically saved first.")
+                    if st.button("🚨 Confirm & Restore Database", key="btn_confirm_restore", use_container_width=True):
+                        with st.spinner("Verifying integrity and restoring..."):
+                            b_bytes = uploaded_b.read()
+                            if uploaded_b.name.endswith(".db"):
+                                # If direct .db file, wrap it into temp path
+                                b_dir = get_backup_dir()
+                                tmp_restore = b_dir / "temp_direct_restore.db"
+                                with open(tmp_restore, "wb") as tf:
+                                    tf.write(b_bytes)
+                                # Make zip
+                                tmp_zip = b_dir / "temp_direct_restore.fvbackup"
+                                with zipfile.ZipFile(tmp_zip, "w") as z:
+                                    z.write(tmp_restore, arcname="finvision_data.db")
+                                r_res = restore_from_backup_archive(tmp_zip)
+                            else:
+                                r_res = restore_from_backup_archive(b_bytes)
+
+                        if r_res["status"] == "SUCCESS":
+                            st.success(r_res["message"])
+                            st.rerun()
+                        else:
+                            st.error(r_res["message"])
+
+        st.divider()
+
+        # Available Snapshots Table in FinVision_Backups
+        st.markdown(f"#### 📜 Available Snapshots in `{b_cfg.get('google_drive_folder_name', BACKUP_FOLDER_NAME)}/`")
+        snapshots = get_available_backups()
+        if not snapshots:
+            st.info("No local snapshots in folder yet. Click 'Run Backup Cycle Now' to create your first backup!")
+        else:
+            for s_idx, snap in enumerate(snapshots):
+                c_sn1, c_sn2 = st.columns([5, 1])
+                with c_sn1:
+                    t_counts = snap.get("table_counts", {})
+                    trades_cnt = t_counts.get("paper_trades", "—")
+                    learn_cnt = t_counts.get("auto_trader_learnings", "—")
+                    st.markdown(
+                        f"""
+                        <div style="background:#161B22; border:1px solid #30363D; border-radius:8px; padding:8px 12px; margin-bottom:6px;">
+                            <div style="display:flex; justify-content:space-between; align-items:center;">
+                                <span style="font-weight:700; font-size:12px; color:#F0F6FC;">📁 {snap['file_name']}</span>
+                                <span style="font-size:11px; color:#8B949E;">Size: <strong>{snap['size_mb']} MB</strong></span>
+                            </div>
+                            <div style="display:flex; gap:14px; font-size:10px; color:#8B949E; margin-top:4px;">
+                                <span>📅 Timestamp: <strong>{snap['timestamp']}</strong></span>
+                                <span>💼 Trades: <strong>{trades_cnt}</strong></span>
+                                <span>🧠 Learnings: <strong>{learn_cnt}</strong></span>
+                            </div>
+                        </div>
+                        """,
+                        unsafe_allow_html=True
+                    )
+                with c_sn2:
+                    if st.button(f"🔄 Restore", key=f"btn_restore_snap_{s_idx}", use_container_width=True, help="Restore database from this snapshot"):
+                        with st.spinner(f"Restoring from {snap['file_name']}..."):
+                            r_res = restore_from_backup_archive(snap["file_path"])
+                        if r_res["status"] == "SUCCESS":
+                            st.success(f"Restored from {snap['file_name']}!")
+                            st.rerun()
+                        else:
+                            st.error(r_res["message"])
 
     # ── TAB 4: AI TRADING ACADEMY & LESSONS ────────────────────────────────────
     with tab_academy:

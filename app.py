@@ -38,11 +38,16 @@ from utils.user_prefs import get_user_preferences, save_user_preference
 
 inject_css()
 
-# ── Initialize SQLite Data Warehouse & Auto-Ingest News ───────────────────────
 init_db()
 try:
     from utils.sync_server import start_sync_server
     start_sync_server()
+except Exception:
+    pass
+
+try:
+    from utils.drive_backup import check_and_run_scheduled_backup
+    check_and_run_scheduled_backup()
 except Exception:
     pass
 
@@ -157,6 +162,15 @@ with st.sidebar:
         st.sidebar.caption(f"🧠 Vector News DB: **{doc_count}** indexed (Synced @ {sync_time})")
     else:
         st.sidebar.caption("🧠 Vector News DB: Live & Ready")
+
+    try:
+        from utils.market_store import get_cloud_backup_settings
+        _bcfg = get_cloud_backup_settings()
+        _last_b = _bcfg.get("last_backup_timestamp") or "Never"
+        _last_b_date = _last_b.split(" ")[0] if " " in _last_b else _last_b
+        st.sidebar.caption(f"📁 Cloud Backup: **{_bcfg.get('google_drive_folder_name', 'FinVision_Backups')}/_** ({_last_b_date})")
+    except Exception:
+        pass
 
     st.divider()
 
