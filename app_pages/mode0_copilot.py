@@ -173,6 +173,17 @@ def render_mode0():
         '⚪ LIVE SCANNER STANDBY (OFF)</span>'
     )
 
+    from utils.cross_device_sync import get_current_device_type
+    dev_type = get_current_device_type()
+    exec_leader = top_prefs.get("execution_leader", "PC_PRIMARY")
+    is_leader = (exec_leader == "PC_PRIMARY" and dev_type == "PC") or (exec_leader == "CLOUD_PRIMARY" and dev_type != "PC")
+
+    node_badge = (
+        '<span style="background:#1f6feb22;color:#58A6FF;border:1px solid #1f6feb55;padding:3px 10px;border-radius:12px;font-size:10px;font-weight:700;">🖥️ LEADER: PC (Executing)</span>'
+        if is_leader
+        else '<span style="background:#8957e522;color:#BC8CFF;border:1px solid #8957e555;padding:3px 10px;border-radius:12px;font-size:10px;font-weight:700;">📱 COMPANION (Monitoring PC Execution)</span>'
+    )
+
     border_color = "#238636" if is_at_active else "#30363D"
     glow = "box-shadow: 0 0 20px rgba(35,134,54,0.25);" if is_at_active else "box-shadow: 0 4px 16px rgba(0,0,0,0.3);"
 
@@ -185,6 +196,7 @@ def render_mode0():
                     <div style="display:flex; align-items:center; gap:8px;">
                         <span style="background:#1f6feb; color:#FFF; font-weight:800; font-size:10px; padding:2px 8px; border-radius:12px; letter-spacing:0.8px;">📡 LIVE SCANNER TELEMETRY</span>
                         <span style="background:#21262d; color:#8b949e; font-size:10px; padding:2px 8px; border-radius:12px;">NIFTY 500 AUTONOMOUS RADAR</span>
+                        {node_badge}
                     </div>
                     <h3 style="margin:6px 0 2px 0; color:#F0F6FC; font-size:21px; font-weight:800;">🤖 FinVision Autonomous Auto-Trader</h3>
                     <div style="font-size:12px; color:#8B949E;">Continuously scans 500+ Indian equities, evaluates multi-timeframe ML consensus (&gt;55%), enforces strict 1% risk budgeting, and executes autonomous trades.</div>
@@ -373,8 +385,37 @@ def render_mode0():
                 help="Simulation records all trades into SQLite with zero real money risk. Live Broker dispatches real orders via official API."
             )
             chosen_exec_mode = "SIMULATION" if "Simulation" in mode_choice else "LIVE_BROKER"
-        with c_at_m2:
-            st.metric("Risk Cap Per Trade", f"{top_risk_pct*100:.1f}%", help="Strictly capped mathematically by the position sizing formula.")
+        # Cross-Device Leader Node (Anti-Duplicate Trading Guard)
+        c_lead1, c_lead2 = st.columns([2, 1])
+        with c_lead1:
+            leader_opt = st.selectbox(
+                "Designated Execution Leader (Anti-Duplicate Trading Guard)",
+                options=[
+                    "🖥️ PC Primary (Recommended — PC executes trades, Mobile monitors)",
+                    "☁️ Cloud 24/7 Primary (Streamlit Cloud executes trades continuously)",
+                ],
+                index=0 if exec_leader == "PC_PRIMARY" else 1,
+                key="sel_exec_leader_cfg",
+                help="Guarantees only ONE designated machine places orders to eliminate duplicate trade risk. The other device operates as a live companion and remote square-off control."
+            )
+            new_exec_leader = "PC_PRIMARY" if "PC" in leader_opt else "CLOUD_PRIMARY"
+            if new_exec_leader != exec_leader:
+                save_user_preference("execution_leader", new_exec_leader)
+                try:
+                    from utils.cross_device_sync import push_sync_to_cloud_async
+                    push_sync_to_cloud_async()
+                except Exception:
+                    pass
+                st.toast(f"Execution Leader set to {new_exec_leader}.", icon="🛡️")
+                st.rerun()
+        with c_lead2:
+            st.markdown(
+                f"<div style='background:#161B22; border:1px solid #30363D; border-radius:8px; padding:8px 12px; margin-top:24px; font-size:11px; color:#8B949E;'>"
+                f"This Machine: <strong>{dev_type}</strong><br/>"
+                f"Operating Role: <strong>{'Execution Leader ⚡' if is_leader else 'Companion Monitor 📱'}</strong>"
+                f"</div>",
+                unsafe_allow_html=True
+            )
 
         # Horizon Selectors & Capacity
         c_h1, c_h2 = st.columns([2, 1])

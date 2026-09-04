@@ -575,16 +575,39 @@ def auto_trader_background_loop(poll_interval: int = 180):
     while not _auto_trader_stop_event.is_set():
         try:
             cfg = get_auto_trader_config()
-            if cfg.get("is_enabled", False):
-                budget = float(cfg.get("allocated_budget", 100000.0))
-                risk = float(cfg.get("risk_pct_per_trade", 0.01))
-                cycle_res = run_auto_trade_cycle(user_budget=budget, risk_pct=risk)
-                # Broadcast latest state to cloud relay
-                try:
-                    from utils.cross_device_sync import push_sync_to_cloud_async
-                    push_sync_to_cloud_async()
-                except Exception:
-                    pass
+            is_enabled = cfg.get("is_enabled", False)
+
+            from utils.user_prefs import get_user_preferences
+            from utils.cross_device_sync import get_current_device_type
+            exec_leader = get_user_preferences().get("execution_leader", "PC_PRIMARY")
+            dev_type = get_current_device_type()
+
+            # Leader Protection: Prevents duplicate order execution across PC and Mobile!
+            is_execution_leader = (
+                (exec_leader == "PC_PRIMARY" and dev_type == "PC")
+                or (exec_leader == "CLOUD_PRIMARY" and dev_type != "PC")
+                or (exec_leader == "ALL_DEVICES")
+            )
+
+            if is_enabled:
+                if is_execution_leader:
+                    budget = float(cfg.get("allocated_budget", 100000.0))
+                    risk = float(cfg.get("risk_pct_per_trade", 0.01))
+                    cycle_res = run_auto_trade_cycle(user_budget=budget, risk_pct=risk)
+                    # Broadcast latest state to cloud relay for mobile telemetry
+                    try:
+                        from utils.cross_device_sync import push_sync_to_cloud_async
+                        push_sync_to_cloud_async()
+                    except Exception:
+                        pass
+                else:
+                    # Companion / Observer Node (e.g. Mobile connecting to Cloud):
+                    # Pulls live status & open positions from PC Leader without duplicate execution
+                    try:
+                        from utils.cross_device_sync import pull_and_apply_cloud_sync
+                        pull_and_apply_cloud_sync()
+                    except Exception:
+                        pass
             else:
                 # If locally paused, check if other device enabled it or made changes
                 try:
