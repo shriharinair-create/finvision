@@ -166,6 +166,42 @@ def _normalize_ticker(symbol: str) -> str:
 
 
 def render_mode2(watchlist: list[str], watchlist_status: str):
+    # ── 📡 Auto-Trader Live Scanner Telemetry Strip ───────────────────────────
+    try:
+        from utils.database import get_auto_trader_config, get_active_auto_trades
+        _at_cfg = get_auto_trader_config()
+        _is_on = _at_cfg.get("is_enabled", False)
+        _active_pos = get_active_auto_trades()
+        _max_slots = _at_cfg.get("max_concurrent_positions", 3)
+        _mode = _at_cfg.get("execution_mode", "SIMULATION")
+
+        c_sc_ban, c_sc_act = st.columns([4, 1])
+        with c_sc_ban:
+            if _is_on:
+                st.markdown(
+                    f"<div style='background: linear-gradient(135deg, #0d1b2a 0%, #161b22 100%); border: 1.5px solid #238636; border-radius: 8px; padding: 10px 14px; margin-bottom: 12px; display:flex; justify-content:space-between; align-items:center;'>"
+                    f"<div><span style='color:#3FB950; font-weight:800; font-size:13px;'>🟢 LIVE SCANNER ACTIVE & AUTONOMOUS TRADING ON</span>"
+                    f"<div style='color:#8B949E; font-size:11px; margin-top:2px;'>Autonomous Engine is monitoring Nifty 500 · Mode: <strong>{_mode}</strong></div></div>"
+                    f"<span style='background:#23863622; color:#3FB950; border:1px solid #23863655; padding:2px 8px; border-radius:10px; font-size:11px; font-weight:700;'>{len(_active_pos)} of {_max_slots} Slots Used</span>"
+                    f"</div>",
+                    unsafe_allow_html=True
+                )
+            else:
+                st.markdown(
+                    f"<div style='background: linear-gradient(135deg, #0d1b2a 0%, #161b22 100%); border: 1.5px solid #30363D; border-radius: 8px; padding: 10px 14px; margin-bottom: 12px; display:flex; justify-content:space-between; align-items:center;'>"
+                    f"<div><span style='color:#8B949E; font-weight:800; font-size:13px;'>⚪ LIVE SCANNER STANDBY (AUTONOMOUS ENGINE PAUSED)</span>"
+                    f"<div style='color:#8B949E; font-size:11px; margin-top:2px;'>Automated execution is OFF. Switch ON in Smart Copilot to enable hands-free trading.</div></div>"
+                    f"<span style='background:#30363D; color:#8B949E; padding:2px 8px; border-radius:10px; font-size:11px; font-weight:700;'>0 of {_max_slots} Slots</span>"
+                    f"</div>",
+                    unsafe_allow_html=True
+                )
+        with c_sc_act:
+            if st.button("🤖 Auto-Trader Cockpit", key="btn_goto_at_from_m2", use_container_width=True):
+                st.session_state["target_operating_mode"] = "copilot"
+                st.rerun()
+    except Exception:
+        pass
+
     st.markdown("## 📡 Market Scanner with Forecast & Intraday Tactical Blueprint")
     st.caption("Screens momentum setups, runs quantitative confluence forecasts, and computes live intraday action blueprints with Top 10 upcoming session rankings.")
 
