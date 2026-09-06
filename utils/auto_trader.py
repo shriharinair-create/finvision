@@ -532,6 +532,14 @@ def monitor_and_resolve_open_trades(dry_run: bool = True) -> list[dict[str, Any]
     except Exception as e:
         logger.warning(f"Batch quote fetch failed for active trades: {e}")
 
+    # Resolve open persona simulations simultaneously
+    try:
+        from utils.persona_engine import resolve_open_persona_simulations
+        if quotes:
+            resolve_open_persona_simulations(quotes)
+    except Exception as e_p:
+        logger.debug(f"Persona simulation resolution error: {e_p}")
+
     market_status = is_indian_market_open_or_simulated()
     is_squareoff = market_status["is_squareoff_time"]
 
@@ -712,6 +720,42 @@ def run_auto_trade_cycle(
                 current_open_tickers=current_tickers,
                 custom_tickers=custom_list,
             )
+
+            # ── 🎭 Autonomous 4-Persona Quant Sandbox Evaluation ─────────────
+            try:
+                from utils.persona_engine import evaluate_stock_for_personas
+                from utils.market_store import log_persona_simulation
+                for cand in candidates:
+                    cand_t = cand["ticker"]
+                    cand_e = cand["entry_price"]
+                    cand_sl = cand["stop_loss_price"]
+                    p_props = evaluate_stock_for_personas(
+                        symbol=cand_t,
+                        ltp=cand_e,
+                        indicators={"rsi": cand.get("rsi", 55.0), "adx": cand.get("adx", 24.0), "atr": max(1.0, abs(cand_e - cand_sl)), "above_ema20": True},
+                        fundamental_score=cand.get("fundamental_score", 75.0),
+                        beta=cand.get("beta", 1.1)
+                    )
+                    for prop in p_props:
+                        log_persona_simulation(
+                            persona_id=prop["persona_id"],
+                            symbol=prop["symbol"],
+                            direction=prop["direction"],
+                            entry_price=prop["entry_price"],
+                            target_price=prop["target_price"],
+                            stop_loss=prop["stop_loss"],
+                            regime=prop["regime"],
+                            reasoning=prop["reasoning"],
+                        )
+            except Exception as e_pers:
+                logger.debug(f"Persona sandbox candidate evaluation error: {e_pers}")
+
+            # ── 🧪 Synthetic Sector Pods Multi-Cohort Forward Cycle ──────────
+            try:
+                from utils.synthetic_cohorts import run_cohort_simulation_cycle
+                run_cohort_simulation_cycle(live_quotes=quotes)
+            except Exception as e_cohort:
+                logger.debug(f"Synthetic cohort simulation notice: {e_cohort}")
 
             for cand in candidates[:slots_available]:
                 tick = cand["ticker"]

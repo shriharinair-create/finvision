@@ -16,8 +16,11 @@ Run with:
 
 from __future__ import annotations
 import argparse
+import hmac
+import os
 from typing import Dict, Any, Optional
-from fastapi import FastAPI, HTTPException, Body
+from fastapi import FastAPI, HTTPException, Body, Security, Depends, status
+from fastapi.security import APIKeyHeader
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import uvicorn
@@ -34,17 +37,47 @@ from utils.bse_bhavcopy import get_bse_eod_quote
 
 app = FastAPI(
     title="FinVision Headless Quantitative API",
-    description="Institutional Market Regime, ML Meta-Labeling, and Webhook Router for Indian Equities.",
+    description="Institutional Market Regime, Risk Vetoes, and Webhook Router for Indian Equities.",
     version="3.0.0",
 )
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# Standards-compliant CORS configuration
+allowed_origins_env = os.getenv("FINVISION_ALLOWED_ORIGINS", "")
+if allowed_origins_env:
+    origins = [o.strip() for o in allowed_origins_env.split(",") if o.strip()]
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=origins,
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_headers=["*"],
+    )
+else:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=False,
+        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_headers=["*"],
+    )
+
+API_KEY_HEADER = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+
+def get_api_key_secret() -> str:
+    return os.getenv("FINVISION_API_KEY", "").strip()
+
+
+def verify_api_key(api_key: Optional[str] = Security(API_KEY_HEADER)):
+    """Verifies optional X-API-Key if FINVISION_API_KEY is configured in the environment."""
+    secret = get_api_key_secret()
+    if secret:
+        if not api_key or not hmac.compare_digest(api_key.strip(), secret):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Unauthorized: Invalid or missing X-API-Key header."
+            )
+    return api_key
 
 
 class TradingViewWebhookPayload(BaseModel):
@@ -194,7 +227,16 @@ def receive_tradingview_alert(payload: TradingViewWebhookPayload):
     """
     Receives alerts from TradingView Pine Script webhooks.
     Validates signal against FinVision's ML Ensemble & Regime Gatekeeper before simulated execution.
+    Protected by passcode verification if configured.
     """
+    configured_passcode = os.getenv("FINVISION_WEBHOOK_PASSCODE", "").strip() or get_api_key_secret()
+    if configured_passcode:
+        if not payload.passcode or not hmac.compare_digest(payload.passcode.strip(), configured_passcode):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Unauthorized webhook alert: Invalid or missing passcode."
+            )
+
     ticker = payload.ticker.upper()
     if not ticker.endswith(".NS") and not ticker.endswith(".BO"):
         ticker += ".NS"

@@ -276,11 +276,33 @@ def init_db() -> None:
             ) VALUES (1, 'DAILY', 7, 'GOOGLE_DRIVE', 'FinVision_Backups', '', '', 'STANDBY')
         """)
 
-        # Migration: Ensure paper_trades has auto-trade tracking columns
+        # 13. Autonomous Multi-Persona Simulation Sandbox
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS persona_simulations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                persona_id TEXT NOT NULL, -- 'MOMENTUM_HUNTER', 'MEAN_REVERTER', 'CONSERVATIVE_VALUE', 'VOLATILITY_BREAKOUT'
+                symbol TEXT NOT NULL,
+                direction TEXT DEFAULT 'BUY',
+                entry_price REAL NOT NULL,
+                target_price REAL NOT NULL,
+                stop_loss REAL NOT NULL,
+                status TEXT DEFAULT 'OPEN', -- 'OPEN', 'TARGET_HIT', 'STOP_HIT', 'CLOSED'
+                pnl_pct REAL DEFAULT 0.0,
+                pnl_amount REAL DEFAULT 0.0,
+                regime TEXT,
+                reasoning TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                closed_at TIMESTAMP
+            )
+        """)
+
+        # Migration: Ensure paper_trades has auto-trade tracking columns & user_id & is_synthetic
         for col_def in [
             ("is_auto_trade", "INTEGER DEFAULT 0"),
             ("execution_mode", "TEXT DEFAULT 'SIMULATION'"),
             ("horizon", "TEXT DEFAULT 'DAY_TRADE'"),
+            ("user_id", "TEXT DEFAULT 'shrihari'"),
+            ("is_synthetic", "INTEGER DEFAULT 0"),
         ]:
             try:
                 cursor.execute(f"ALTER TABLE paper_trades ADD COLUMN {col_def[0]} {col_def[1]}")
@@ -356,8 +378,11 @@ def log_paper_trade(
     is_auto_trade: int = 0,
     execution_mode: str = "SIMULATION",
     horizon: str = "DAY_TRADE",
+    user_id: Optional[str] = None,
 ) -> int:
-    """Log a new simulated or broker-dispatched trade into the SQLite journal."""
+    """Log a new simulated or broker-dispatched trade strictly isolated to the specified user."""
+    from utils.user_prefs import get_current_user_id
+    effective_user = (user_id or get_current_user_id()).strip().lower()
     ts_now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     pos_val = round(entry_price * shares, 2)
 
@@ -365,18 +390,23 @@ def log_paper_trade(
         cursor = conn.cursor()
         cursor.execute("""
             INSERT INTO paper_trades
-            (timestamp, ticker, trade_type, entry_price, target_price, stop_loss_price, shares, position_value, notes, is_auto_trade, execution_mode, horizon)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (ts_now, ticker.upper(), trade_type, entry_price, target_price, stop_loss_price, shares, pos_val, notes, is_auto_trade, execution_mode, horizon))
+            (timestamp, ticker, trade_type, entry_price, target_price, stop_loss_price, shares, position_value, notes, is_auto_trade, execution_mode, horizon, user_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (ts_now, ticker.upper(), trade_type, entry_price, target_price, stop_loss_price, shares, pos_val, notes, is_auto_trade, execution_mode, horizon, effective_user))
         conn.commit()
         return cursor.lastrowid or 0
 
 
-def get_all_paper_trades() -> list[dict[str, Any]]:
-    """Retrieve all simulated paper trades with their latest status and PnL."""
+def get_all_paper_trades(user_id: Optional[str] = None) -> list[dict[str, Any]]:
+    """Retrieve all simulated paper trades isolated strictly to the user."""
+    from utils.user_prefs import get_current_user_id
+    effective_user = (user_id or get_current_user_id()).strip().lower()
     with get_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT * FROM paper_trades ORDER BY id DESC")
+        if effective_user == "all":
+            cursor.execute("SELECT * FROM paper_trades ORDER BY id DESC")
+        else:
+            cursor.execute("SELECT * FROM paper_trades WHERE user_id = ? OR (user_id IS NULL AND ? = 'shrihari') ORDER BY id DESC", (effective_user, effective_user))
         rows = cursor.fetchall()
         return [dict(r) for r in rows]
 
@@ -413,9 +443,9 @@ def close_paper_trade(trade_id: int, exit_price: float, reason: str = "MANUAL_CL
         return True
 
 
-def get_paper_trading_summary() -> dict[str, Any]:
-    """Computes total simulated portfolio metrics: Win Rate, Total PnL, Profit Factor."""
-    trades = get_all_paper_trades()
+def get_paper_trading_summary(user_id: Optional[str] = None) -> dict[str, Any]:
+    """Computes total simulated portfolio metrics: Win Rate, Total PnL, Profit Factor for the active user."""
+    trades = get_all_paper_trades(user_id=user_id)
     closed_trades = [t for t in trades if t["status"] != "OPEN"]
 
     if not closed_trades:
@@ -911,15 +941,24 @@ def get_auto_trader_learnings(limit: int = 25) -> list[dict[str, Any]]:
         return [dict(r) for r in cursor.fetchall()]
 
 
-def get_active_auto_trades() -> list[dict[str, Any]]:
-    """Retrieves all currently open auto-trader positions."""
+def get_active_auto_trades(user_id: Optional[str] = None) -> list[dict[str, Any]]:
+    """Retrieves all currently open auto-trader positions for the specified or active user."""
+    from utils.user_prefs import get_current_user_id
+    effective_user = (user_id or get_current_user_id()).strip().lower()
     with get_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("""
-            SELECT * FROM paper_trades
-            WHERE is_auto_trade = 1 AND status = 'OPEN'
-            ORDER BY id DESC
-        """)
+        if effective_user == "all":
+            cursor.execute("""
+                SELECT * FROM paper_trades
+                WHERE is_auto_trade = 1 AND status = 'OPEN'
+                ORDER BY id DESC
+            """)
+        else:
+            cursor.execute("""
+                SELECT * FROM paper_trades
+                WHERE is_auto_trade = 1 AND status = 'OPEN' AND (user_id = ? OR (user_id IS NULL AND ? = 'shrihari'))
+                ORDER BY id DESC
+            """, (effective_user, effective_user))
         return [dict(r) for r in cursor.fetchall()]
 
 
@@ -984,6 +1023,91 @@ def save_cloud_backup_settings(config: dict[str, Any]) -> bool:
         ))
         conn.commit()
         return True
+
+
+# ── Autonomous Multi-Persona Simulation Sandbox Helpers ────────────────────────
+
+def log_persona_simulation(
+    persona_id: str,
+    symbol: str,
+    direction: str,
+    entry_price: float,
+    target_price: float,
+    stop_loss: float,
+    regime: str,
+    reasoning: str
+) -> int:
+    """Logs an autonomous trade generated by one of the 4 quant simulation personas."""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO persona_simulations (
+                persona_id, symbol, direction, entry_price, target_price, stop_loss,
+                status, pnl_pct, pnl_amount, regime, reasoning, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, 'OPEN', 0.0, 0.0, ?, ?, CURRENT_TIMESTAMP)
+        """, (persona_id, symbol, direction, entry_price, target_price, stop_loss, regime, reasoning))
+        conn.commit()
+        return cursor.lastrowid
+
+
+def get_persona_simulations(persona_id: Optional[str] = None, status: Optional[str] = None, limit: int = 50) -> list[dict[str, Any]]:
+    """Retrieves simulated trades, optionally filtered by persona or status."""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        query = "SELECT * FROM persona_simulations"
+        params = []
+        conds = []
+        if persona_id:
+            conds.append("persona_id = ?")
+            params.append(persona_id)
+        if status:
+            conds.append("status = ?")
+            params.append(status)
+        if conds:
+            query += " WHERE " + " AND ".join(conds)
+        query += " ORDER BY id DESC LIMIT ?"
+        params.append(limit)
+        cursor.execute(query, tuple(params))
+        return [dict(r) for r in cursor.fetchall()]
+
+
+def get_persona_aggregate_metrics() -> dict[str, dict[str, Any]]:
+    """
+    Computes real-time performance metrics (win rate, total pnl, trade count)
+    for each of the 4 autonomous personas.
+    """
+    default_metrics = {
+        "MOMENTUM_HUNTER": {"name": "⚡ Alpha Momentum Hunter", "trades": 0, "wins": 0, "win_rate": 0.0, "total_pnl": 0.0, "regime": "Trending Bull"},
+        "MEAN_REVERTER": {"name": "🔄 Delta Mean Reverter", "trades": 0, "wins": 0, "win_rate": 0.0, "total_pnl": 0.0, "regime": "Rangebound Chop"},
+        "CONSERVATIVE_VALUE": {"name": "🛡️ Sigma Conservative Value", "trades": 0, "wins": 0, "win_rate": 0.0, "total_pnl": 0.0, "regime": "Volatile / Defensive"},
+        "VOLATILITY_BREAKOUT": {"name": "🌪️ Vega Volatility Breakout", "trades": 0, "wins": 0, "win_rate": 0.0, "total_pnl": 0.0, "regime": "Event Breakouts"},
+    }
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT 
+                persona_id,
+                COUNT(*) as total_trades,
+                SUM(CASE WHEN pnl_pct > 0 THEN 1 ELSE 0 END) as win_trades,
+                SUM(pnl_pct) as net_pnl,
+                AVG(pnl_pct) as avg_pnl
+            FROM persona_simulations
+            GROUP BY persona_id
+        """)
+        rows = cursor.fetchall()
+        for r in rows:
+            pid = r["persona_id"]
+            if pid in default_metrics:
+                tot = r["total_trades"] or 0
+                wins = r["win_trades"] or 0
+                net = float(r["net_pnl"] or 0.0)
+                wr = (wins / tot * 100.0) if tot > 0 else 0.0
+                default_metrics[pid]["trades"] = tot
+                default_metrics[pid]["wins"] = wins
+                default_metrics[pid]["win_rate"] = round(wr, 1)
+                default_metrics[pid]["total_pnl"] = round(net, 2)
+    return default_metrics
+
 
 
 

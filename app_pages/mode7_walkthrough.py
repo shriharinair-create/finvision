@@ -13,11 +13,24 @@ import textwrap
 
 
 def render_mode7():
-    c_back, _ = st.columns([1.5, 3])
+    c_back, c_dl = st.columns([1.5, 2.5])
     with c_back:
         if st.button("🔙 Back to Smart Copilot", key="walkthrough_back_to_copilot_btn", use_container_width=True):
             st.session_state["target_operating_mode"] = "copilot"
             st.rerun()
+    with c_dl:
+        import os
+        pdf_candidate = "FINVISION_COMMUNITY_STARTUP_GUIDE.pdf"
+        if os.path.exists(pdf_candidate):
+            with open(pdf_candidate, "rb") as f_pdf:
+                st.download_button(
+                    label="📥 Download Beginner's Field Manual (PDF)",
+                    data=f_pdf.read(),
+                    file_name="FinVision_Beginners_Field_Manual.pdf",
+                    mime="application/pdf",
+                    key="download_community_guide_btn",
+                    use_container_width=True
+                )
 
     st.markdown(
         textwrap.dedent("""
@@ -302,12 +315,12 @@ def render_mode7():
                 unsafe_allow_html=True
             )
 
-        with st.expander("Scenario 4: Cloud Server Disruption / Streamlit Reboot", expanded=False):
+        with st.expander("Scenario 4: Cloud Server Disruption / VM Service Reboot", expanded=False):
             st.markdown(
                 textwrap.dedent("""
                 * All active trades, stop-loss ratchets, and settings are persistently written to SQLite (`db/finvision.db`) and synced as JSON state.
-                * If the Streamlit Cloud container sleeps or restarts, the auto-trader daemon reloads existing open positions from disk on boot.
-                * No trade data or order triggers are lost during container reboots.
+                * If the Oracle Cloud VM reboots or systemd restarts the service, the auto-trader daemon automatically reloads existing open positions from disk on boot.
+                * No trade data or order triggers are lost during VM reboots.
                 """)
             )
 

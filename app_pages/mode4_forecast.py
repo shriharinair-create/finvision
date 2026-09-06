@@ -951,6 +951,13 @@ def render_mode4():
             if not audit_df.empty:
                 st.dataframe(audit_df, use_container_width=True, hide_index=True)
 
+            q_summary = wf_result.get("quarterly_summary", [])
+            if q_summary:
+                st.markdown("#### 🗓️ Calendar Quarter Cluster Breakdown")
+                st.caption("Groups test windows by quarter to audit consistency across distinct market macro phases.")
+                st.dataframe(pd.DataFrame(q_summary), use_container_width=True, hide_index=True)
+
+
     with tab_news:
         st.markdown(f"### Indexed News in Vector DB ({total_count} total articles)")
         if not articles_out:

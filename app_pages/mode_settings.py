@@ -42,34 +42,36 @@ from utils.drive_backup import (
     run_backup_cycle,
     save_cloud_backup_settings,
 )
-from utils.user_prefs import get_user_preferences, save_user_preference
+from utils.user_prefs import (
+    get_user_preferences,
+    save_user_preference,
+    get_user_registry,
+    update_user_credentials,
+    get_current_user_id,
+)
 
 
 def render_mode_settings() -> None:
     """Renders the comprehensive FinVision Settings & Cloud Hub."""
 
-    # ── Page Header ───────────────────────────────────────────────────────────
+    # ── Compact Cockpit Header ───────────────────────────────────────────────
     st.markdown(
         textwrap.dedent("""
-        <div style="background: linear-gradient(135deg, #161b22 0%, #0d1117 100%); border: 1px solid #30363d; border-radius: 12px; padding: 20px 24px; margin-bottom: 20px;">
-            <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
-                <div>
-                    <span style="background:#58A6FF22; color:#58A6FF; border:1px solid #58A6FF44; font-weight:800; font-size:11px; padding:3px 10px; border-radius:12px; letter-spacing:0.5px;">SYSTEM PREFERENCES</span>
-                    <h2 style="margin:6px 0 4px 0; color:#F0F6FC; font-size:24px;">⚙️ FinVision Settings & Cloud Backup Hub</h2>
-                    <div style="font-size:13px; color:#8B949E; line-height:1.4;">
-                        Configure automated Cloud Backups, Drive Providers, Autonomous Auto-Trader defaults, and risk parameters.
-                    </div>
-                </div>
+        <div style="background: #161B22; border: 1px solid #30363D; border-radius: 8px; padding: 10px 16px; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+            <div>
+                <span style="font-size: 15px; font-weight: 700; color: #F0F6FC;">⚙️ Settings & System Configuration</span>
+                <span style="font-size: 11px; color: #8B949E; margin-left: 8px;">Cloud Sync · Auto-Trader · Risk · Security</span>
             </div>
         </div>
         """),
         unsafe_allow_html=True,
     )
 
-    t_backup, t_auto, t_account = st.tabs([
+    t_backup, t_auto, t_account, t_security = st.tabs([
         "☁️ Cloud Drive Backup & Restore",
         "🤖 Autonomous Auto-Trader Defaults",
         "💰 Account & Risk Profile",
+        "🛡️ Security & Credentials",
     ])
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -84,44 +86,47 @@ def render_mode_settings() -> None:
         last_b_time = b_cfg.get("last_backup_timestamp") or "Never"
         last_b_stat = b_cfg.get("last_backup_status", "STANDBY")
 
-        # ── Status Hero Card ──────────────────────────────────────────────────
+        # ── Compact Status & 1-Tap Actions (Above the fold on mobile) ──────────
         stat_color = "#3FB950" if last_b_stat in ("SUCCESS", "LOCAL_SAVED") else ("#F85149" if last_b_stat == "ERROR" else "#8B949E")
-        st.markdown(
-            textwrap.dedent(f"""
-            <div style="background:#0D1117; border:1px solid #30363D; border-left:4px solid {stat_color}; border-radius:8px; padding:14px 18px; margin-bottom:16px;">
-                <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
-                    <div>
-                        <div style="font-size:11px; color:#8B949E; text-transform:uppercase; letter-spacing:0.5px;">Cloud Backup Status</div>
-                        <div style="font-size:16px; font-weight:700; color:#F0F6FC;">Last Backup: <span style="color:#58A6FF;">{last_b_time}</span></div>
-                    </div>
-                    <div style="text-align:right;">
-                        <span style="background:{stat_color}22; color:{stat_color}; border:1px solid {stat_color}55; padding:4px 12px; border-radius:14px; font-weight:700; font-size:12px;">
-                            {last_b_stat}
-                        </span>
-                    </div>
-                </div>
-            </div>
-            """),
-            unsafe_allow_html=True,
-        )
+        c_status, c_act1, c_act2 = st.columns([1.6, 1.2, 1.2])
+        with c_status:
+            st.markdown(
+                f"<div style='background:#0D1117; border:1px solid #30363D; border-left:3px solid {stat_color}; border-radius:6px; padding:6px 10px; margin-bottom:8px;'>"
+                f"<div style='font-size:10px; color:#8B949E; text-transform:uppercase;'>Backup: <strong style='color:{stat_color};'>{last_b_stat}</strong></div>"
+                f"<div style='font-size:12px; font-weight:700; color:#F0F6FC;'>Last: <span style='color:#58A6FF;'>{last_b_time}</span></div>"
+                f"</div>",
+                unsafe_allow_html=True
+            )
+        with c_act1:
+            if st.button("☁️ Backup Now", key="btn_run_backup_now_top", use_container_width=True, type="primary"):
+                with st.spinner("Backing up database..."):
+                    res = run_backup_cycle()
+                if res["status"] in ("SUCCESS", "LOCAL_SAVED"):
+                    st.success(f"{res['message']} ({res['manifest']['compressed_mb']} MB)")
+                    st.toast("☁️ Backup created successfully!", icon="✅")
+                    st.rerun()
+                else:
+                    st.error(f"Backup notice: {res['message']}")
+        with c_act2:
+            avail = get_available_backups()
+            if avail:
+                b_p = avail[0].get("path") or avail[0].get("file_path")
+                latest_b_path = Path(b_p) if b_p else None
+                if latest_b_path and latest_b_path.exists():
+                    with open(latest_b_path, "rb") as f:
+                        b_bytes = f.read()
+                    st.download_button(
+                        label="📥 Download .fvbackup",
+                        data=b_bytes,
+                        file_name=latest_b_path.name,
+                        mime="application/octet-stream",
+                        key="btn_download_latest_fvbackup_top",
+                        use_container_width=True,
+                    )
+            else:
+                st.button("📥 No Archive Yet", disabled=True, use_container_width=True)
 
-        # ── Isolated Dedicated Folder Guarantee ───────────────────────────────
-        st.markdown(
-            textwrap.dedent(f"""
-            <div style="background:rgba(35, 134, 54, 0.1); border:1px solid #238636; border-radius:8px; padding:12px 16px; margin-bottom:16px;">
-                <div style="display:flex; align-items:center; gap:8px;">
-                    <span style="font-size:18px;">📁</span>
-                    <strong style="color:#3FB950; font-size:13px;">Isolated Dedicated Folder: <code style="background:#161B22; color:#58A6FF; padding:2px 8px; border-radius:4px;">{folder_name}/</code></strong>
-                </div>
-                <div style="font-size:12px; color:#8B949E; margin-top:4px; line-height:1.4;">
-                    FinVision strictly keeps all database archives in its own isolated subfolder. Your personal Google Drive root, documents, and photos remain <strong>100% untouched and uncluttered</strong>. Each backup is ultra-lean (~1.2 MB).
-                </div>
-            </div>
-            """),
-            unsafe_allow_html=True,
-        )
-
-        st.markdown("### 1. Drive Provider & Backup Schedule")
+        st.caption(f"📁 Dedicated backup target: `{folder_name}/` (personal Drive root remains untouched)")
 
         # Provider Options
         provider_map = {
@@ -499,3 +504,53 @@ def render_mode_settings() -> None:
             st.session_state["risk_pct"] = acc_risk
             st.toast("✅ Account capital & risk preferences saved!", icon="💰")
             st.rerun()
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # TAB 4: SECURITY & CREDENTIALS
+    # ══════════════════════════════════════════════════════════════════════════
+    with t_security:
+        st.markdown("### 🛡️ Security, Passphrase & PIN Management")
+        st.caption("Manage your 4-digit quick unlock PIN, Master Passphrase, and view your 4-word offline recovery key.")
+
+        uid = get_current_user_id()
+        reg = get_user_registry()
+        uinfo = reg.get(uid, {})
+
+        st.info(f"Active Account: **{uinfo.get('display_name', uid)}** (`{uid}`)")
+
+        c_sec1, c_sec2 = st.columns(2)
+        with c_sec1:
+            st.markdown("#### 🔑 Update Credentials")
+            cur_pass = st.text_input("Current Master Passphrase", type="password", key="sec_cur_pass")
+            new_pass = st.text_input("New Master Passphrase (leave blank to keep current)", type="password", key="sec_new_pass")
+            new_pin = st.text_input("New 4-Digit Quick PIN (leave blank to keep current)", type="password", max_chars=8, key="sec_new_pin")
+
+            if st.button("🔒 Update Security Credentials", key="btn_update_sec_creds", type="primary"):
+                if not cur_pass:
+                    st.error("Please enter your current Master Passphrase to authorize changes.")
+                else:
+                    ok_up, msg_up = update_user_credentials(uid, cur_pass, new_pass if new_pass else None, new_pin if new_pin else None)
+                    if ok_up:
+                        st.success(msg_up)
+                        st.toast("✅ Credentials updated successfully!", icon="🔒")
+                    else:
+                        st.error(msg_up)
+
+        with c_sec2:
+            st.markdown("#### 📜 Offline Recovery Key")
+            st.caption("Keep this 4-word phrase safe in your personal notes. It allows 1-click PIN recovery directly in any web browser without external apps.")
+
+            rec_phrase = uinfo.get("recovery_phrase", "falcon-river-summit-copper")
+            st.markdown(
+                f"""
+                <div style="background:#161B22; border:1px solid #388BFD; border-radius:8px; padding:14px; margin-bottom:12px;">
+                    <div style="font-size:11px; color:#8B949E; text-transform:uppercase; letter-spacing:0.5px;">Your 4-Word Recovery Phrase</div>
+                    <div style="font-family:monospace; font-size:16px; color:#3FB950; font-weight:bold; margin-top:4px;">
+                        {rec_phrase}
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+            st.caption("If you ever get locked out of your PIN, visit the '🆘 Reset PIN' tab on the login screen and enter this phrase.")
+

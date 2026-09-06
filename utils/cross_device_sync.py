@@ -41,13 +41,11 @@ _is_syncing_lock = threading.Lock()
 
 
 def get_current_device_type() -> str:
-    """Detects whether running on local PC or Streamlit Cloud / Mobile."""
+    """Detects whether running on local Windows PC or Oracle Cloud VM / Linux."""
     if os.name == "nt":
         return "PC"
-    # Streamlit Cloud runs on Linux containers
-    if os.environ.get("STREAMLIT_SERVER_BASE_URL_PATH") or os.path.exists("/app"):
-        return "CLOUD_MOBILE"
-    return "MOBILE"
+    # Linux host indicates Oracle Cloud VM / remote container
+    return "CLOUD_PRIMARY"
 
 
 def export_sync_payload() -> dict[str, Any]:

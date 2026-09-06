@@ -140,7 +140,13 @@ def detect_indian_market_regime(
         cross_badge = "⚠️ Cross-Exchange Divergence Detected"
 
     # ── Regime Classification Logic ──────────────────────────────────────────
-    if vix_val >= 18.5 or (abs(ret_5d) >= 2.5 and pct_above_ema20 < 0):
+    # Priority Hierarchy:
+    #   1. High Volatility Chop: Elevated stress (VIX >= 18.5) or severe whipsaws
+    #   2. Bull Trend Markup: Clean institutional EMA stack (Price > EMA20 > EMA50 > SMA200)
+    #   3. Quiet Float Accumulation: Low VIX (<= 13.0) with non-panicked consolidation (|ret_5d| >= -1.5%)
+    #   4. Bear Markdown: Structural breakdown below key EMAs with sustained distribution
+    #   5. Balanced Consolidation: Neutral mean-reversion swing market
+    if vix_val >= 18.5 or (abs(ret_5d) >= 2.5 and pct_above_ema20 < -1.0):
         regime_code = "HIGH_VOLATILITY_CHOP"
         regime_name = "High-Volatility Chop / Expansion"
         badge_color = "#FFB300"
@@ -168,6 +174,20 @@ def detect_indian_market_regime(
             f"Trend-following and high-alpha breakouts have strong statistical follow-through."
         )
 
+    elif vix_val <= 13.0 and ret_5d >= -1.5 and (is_above_200 or pct_above_ema20 >= -2.0):
+        regime_code = "QUIET_ACCUMULATION"
+        regime_name = "Quiet Float Absorption"
+        badge_color = "#A371F7"
+        strategy_playbook = "WYCKOFF_SWING_ACCUMULATION"
+        breakouts_enabled = True
+        target_mult = 1.05
+        stop_mult = 1.00
+        risk_mult = 0.85
+        guidance = (
+            f"Market consolidating with low VIX ({vix_val:.1f}). Smart money quietly absorbing float across NSE and BSE. "
+            f"Accumulate near range support before volatility expansion."
+        )
+
     elif last_nifty < ema20 and last_nifty < ema50:
         regime_code = "BEAR_MARKDOWN"
         regime_name = "Bear Markdown / Correction"
@@ -183,17 +203,17 @@ def detect_indian_market_regime(
         )
 
     else:
-        regime_code = "QUIET_ACCUMULATION"
-        regime_name = "Quiet Float Absorption"
-        badge_color = "#A371F7"
-        strategy_playbook = "WYCKOFF_SWING_ACCUMULATION"
+        regime_code = "NORMAL_BALANCED"
+        regime_name = "Balanced Consolidation"
+        badge_color = "#58A6FF"
+        strategy_playbook = "BALANCED_SWING"
         breakouts_enabled = True
-        target_mult = 1.05
+        target_mult = 1.00
         stop_mult = 1.00
         risk_mult = 0.85
         guidance = (
-            f"Market consolidating with low VIX ({vix_val:.1f}). Smart money quietly absorbing float across NSE and BSE. "
-            f"Accumulate near range support before volatility expansion."
+            f"Nifty consolidating near key EMAs ({pct_above_ema20:+.1f}%) with normal India VIX ({vix_val:.1f}). "
+            f"Standard balanced trend and swing setups active."
         )
 
     return {

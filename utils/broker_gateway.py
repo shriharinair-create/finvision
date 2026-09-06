@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 
 SUPPORTED_BROKERS = [
     "Zerodha Kite",
+    "Groww (GTT / Webhook)",
     "Upstox",
     "Angel One",
     "Fenix Webhook / n8n",
@@ -58,6 +59,20 @@ def build_broker_order_payload(
             "trigger_price": round(stop_loss, 2) if "SL" in order_type else 0.0,
             "validity": "DAY",
             "tag": "FinVisionCopilot",
+        }
+    elif "Groww" in broker:
+        # Groww GTT & Webhook payload format
+        return {
+            "symbol": clean_symbol,
+            "exchange": "NSE",
+            "transaction_type": transaction_type.upper(),
+            "order_type": order_type.upper(),
+            "quantity": quantity,
+            "product": "INTRADAY" if product == "MIS" else "DELIVERY",
+            "price": round(price, 2),
+            "trigger_price": round(stop_loss, 2) if "SL" in order_type else 0.0,
+            "target_price": round(target, 2),
+            "tag": "FinVisionAuto",
         }
     elif "Upstox" in broker:
         # Upstox API v2 order format

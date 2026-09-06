@@ -64,6 +64,15 @@ from utils.bse_helper import resolve_indian_ticker, is_bse_scrip_code
 from utils.bse_corporate import check_corporate_event_risk
 from utils.indian_macro import fetch_official_indian_macro, compute_indian_fci
 from utils.adaptive_weights import get_regime_adaptive_weights, calculate_adaptive_confluence_score
+from utils.persona_engine import (
+    get_all_personas,
+    seed_sandbox_if_empty,
+    get_persona_budgets,
+    save_persona_budgets,
+    get_persona_active,
+    save_persona_active,
+)
+from utils.market_store import get_persona_simulations, get_persona_aggregate_metrics
 import textwrap
 
 
@@ -226,16 +235,24 @@ def render_mode0():
         unsafe_allow_html=True
     )
 
+    # Determine logged-in user and administrative privileges
+    active_user = st.session_state.get("authenticated_user", "")
+    user_role = st.session_state.get("user_role", "trader")
+    is_admin = (user_role == "admin") or (active_user in ("admin", "shrihari"))
+
     # Tripped Circuit Breaker Alert Banner
     if is_cb_tripped:
         c_cb1, c_cb2 = st.columns([3.5, 1])
         with c_cb1:
             st.error(f"🛑 **{cb_telemetry.get('shield_status')}**\n\nAll autonomous new trade entries are locked to protect capital. Existing open positions continue to be safely monitored and exited.")
         with c_cb2:
-            if st.button("🔄 Override & Reset Shields", key="btn_reset_cb_cockpit", use_container_width=True):
-                reset_circuit_breaker()
-                st.toast("Circuit Breaker reset. Trading permitted.", icon="🟢")
-                st.rerun()
+            if is_admin:
+                if st.button("🔄 Override & Reset Shields", key="btn_reset_cb_cockpit", use_container_width=True):
+                    reset_circuit_breaker()
+                    st.toast("Circuit Breaker reset. Trading permitted.", icon="🟢")
+                    st.rerun()
+            else:
+                st.caption("🔒 Shield reset restricted to Platform Admin.")
 
     # 2. Live Scanner Telemetry Metric Cards
     c_tel1, c_tel2, c_tel3, c_tel4 = st.columns(4)
@@ -277,40 +294,63 @@ def render_mode0():
     # 3. Quick Engine Controls (Master Switch, Trigger Button, Cross-Device Sync, Emergency Kill)
     c_ctrl1, c_ctrl2, c_ctrl3, c_ctrl4 = st.columns([1.1, 1.3, 1.0, 1.0])
     with c_ctrl1:
-        t_master = st.toggle(
-            "⚡ Auto-Trade Master Switch",
-            value=is_at_active,
-            key="toggle_at_master_hero",
-            help="When ON, the AI will autonomously scan for high-conviction trades and execute without manual intervention."
-        )
-        if t_master != is_at_active:
-            auto_cfg["is_enabled"] = t_master
-            save_auto_trader_config(auto_cfg)
-            try:
-                from utils.cross_device_sync import push_sync_to_cloud_async
-                push_sync_to_cloud_async()
-            except Exception:
-                pass
-            st.toast(f"Auto-Trader {'activated' if t_master else 'paused'} and synced to cloud.", icon="🤖")
-            st.rerun()
+        if is_admin:
+            t_master = st.toggle(
+                "⚡ Auto-Trade Master Switch",
+                value=is_at_active,
+                key="toggle_at_master_hero",
+                help="When ON, the AI will autonomously scan for high-conviction trades and execute without manual intervention."
+            )
+            if t_master != is_at_active:
+                auto_cfg["is_enabled"] = t_master
+                save_auto_trader_config(auto_cfg)
+                try:
+                    from utils.cross_device_sync import push_sync_to_cloud_async
+                    push_sync_to_cloud_async()
+                except Exception:
+                    pass
+                st.toast(f"Auto-Trader {'activated' if t_master else 'paused'} and synced to cloud.", icon="🤖")
+                st.rerun()
+        else:
+            st.markdown(
+                f"""
+                <div style="background:#161B22; border:1px solid #30363D; border-radius:8px; padding:8px 12px;">
+                    <div style="font-size:10px; color:#8B949E; font-weight:700; text-transform:uppercase;">🔒 Server Engine Daemon</div>
+                    <div style="font-size:12px; color:{'#3FB950' if is_at_active else '#8B949E'}; font-weight:700; margin-top:2px;">
+                        {'🟢 Running 24/7' if is_at_active else '⚪ Standby (Paused)'}
+                    </div>
+                    <div style="font-size:10px; color:#6E7681; margin-top:2px;">Managed by Platform Admin</div>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
     with c_ctrl2:
-        if st.button("🔄 Trigger Auto-Trade Scan Cycle Now", key="btn_run_at_cycle_hero", use_container_width=True):
-            with st.spinner("🤖 Auto-Trader is monitoring positions and scanning for high-conviction entries..."):
-                cycle_report = run_auto_trade_cycle(user_budget=top_budget, risk_pct=top_risk_pct)
-            num_closed = len(cycle_report.get("closed_in_cycle", []))
-            num_entered = len(cycle_report.get("new_entries", []))
-            if num_closed > 0 or num_entered > 0:
-                st.success(f"🎯 Cycle Complete: {num_entered} new trade(s) entered, {num_closed} position(s) exited & diagnosed.")
-            else:
-                st.info("ℹ️ Auto-Trade scan complete: Positions monitored, no new trade triggered (within risk/conviction thresholds).")
-            try:
-                from utils.cross_device_sync import push_sync_to_cloud_async
-                push_sync_to_cloud_async()
-            except Exception:
-                pass
-            st.rerun()
+        if is_admin:
+            if st.button("🔄 Trigger Auto-Trade Scan Cycle Now", key="btn_run_at_cycle_hero", use_container_width=True):
+                with st.spinner("🤖 Auto-Trader is monitoring positions and scanning for high-conviction entries..."):
+                    cycle_report = run_auto_trade_cycle(user_budget=top_budget, risk_pct=top_risk_pct)
+                num_closed = len(cycle_report.get("closed_in_cycle", []))
+                num_entered = len(cycle_report.get("new_entries", []))
+                if num_closed > 0 or num_entered > 0:
+                    st.success(f"🎯 Cycle Complete: {num_entered} new trade(s) entered, {num_closed} position(s) exited & diagnosed.")
+                else:
+                    st.info("ℹ️ Auto-Trade scan complete: Positions monitored, no new trade triggered (within risk/conviction thresholds).")
+                try:
+                    from utils.cross_device_sync import push_sync_to_cloud_async
+                    push_sync_to_cloud_async()
+                except Exception:
+                    pass
+                st.rerun()
+        else:
+            if st.button("🔄 Test Scan My Setup", key="btn_run_my_scan_hero", use_container_width=True, help="Simulates an on-demand scan using your active personas and custom watchlist."):
+                with st.spinner("🤖 Scanning setups matching your profile settings..."):
+                    cycle_report = run_auto_trade_cycle(user_budget=top_budget, risk_pct=top_risk_pct)
+                num_closed = len(cycle_report.get("closed_in_cycle", []))
+                num_entered = len(cycle_report.get("new_entries", []))
+                st.toast(f"Scan complete: {num_entered} setup(s) evaluated.", icon="🎯")
+                st.rerun()
     with c_ctrl3:
-        if st.button("☁️ Sync PC & Mobile Now", key="btn_cross_device_sync_cockpit", use_container_width=True, help="Transfers trade status, active positions, and configuration across PC and Mobile devices."):
+        if st.button("☁️ Refresh Cloud Telemetry", key="btn_cross_device_sync_cockpit", use_container_width=True, help="Pulls latest telemetry, active positions, and quotes from the 24/7 cloud engine."):
             with st.spinner("🔄 Synchronizing state with cloud relay..."):
                 try:
                     from utils.cross_device_sync import pull_and_apply_cloud_sync, push_sync_to_cloud_async
@@ -321,17 +361,28 @@ def render_mode0():
                     st.toast(f"Sync note: {ex_sync}", icon="ℹ️")
             st.rerun()
     with c_ctrl4:
-        if st.button("🚨 EMERGENCY KILL", key="btn_at_emergency_kill", use_container_width=True, help="Immediately halts Auto-Trader and locks shields."):
-            auto_cfg["is_enabled"] = False
-            trip_circuit_breaker("Emergency Manual Kill Switch Activated by Trader", cooldown_hours=24.0)
-            save_auto_trader_config(auto_cfg)
-            try:
-                from utils.cross_device_sync import push_sync_to_cloud_async
-                push_sync_to_cloud_async()
-            except Exception:
-                pass
-            st.toast("🚨 EMERGENCY KILL ACTIVATED! Auto-Trader halted.", icon="🛑")
-            st.rerun()
+        if is_admin:
+            if st.button("🚨 EMERGENCY KILL", key="btn_at_emergency_kill", use_container_width=True, help="Immediately halts Auto-Trader and locks shields server-wide."):
+                auto_cfg["is_enabled"] = False
+                trip_circuit_breaker("Emergency Manual Kill Switch Activated by Administrator", cooldown_hours=24.0)
+                save_auto_trader_config(auto_cfg)
+                try:
+                    from utils.cross_device_sync import push_sync_to_cloud_async
+                    push_sync_to_cloud_async()
+                except Exception:
+                    pass
+                st.toast("🚨 EMERGENCY KILL ACTIVATED! Auto-Trader halted server-wide.", icon="🛑")
+                st.rerun()
+        else:
+            if st.button("🚨 PAUSE MY TRADES", key="btn_pause_my_trades_hero", use_container_width=True, help="Immediately pauses all 4 autonomous personas on your personal profile."):
+                save_persona_active({
+                    "MOMENTUM_HUNTER": False,
+                    "MEAN_REVERTER": False,
+                    "CONSERVATIVE_VALUE": False,
+                    "VOLATILITY_BREAKOUT": False,
+                }, user_id=active_user)
+                st.toast("All autonomous personas paused for your profile! (Server engine unaffected).", icon="⏸️")
+                st.rerun()
 
     # 4. Live Scanner Radar & Active Positions Feed (Directly visible without expander)
     if active_auto_trades:
@@ -432,7 +483,7 @@ def render_mode0():
                 options=[
                     "🛡️ Auto-Failover (Recommended — PC executes; Cloud auto-takes over if PC crashes/shuts down)",
                     "🖥️ PC Only (Strict — Scans run only while PC is powered on)",
-                    "☁️ Cloud 24/7 Primary (Streamlit Cloud executes continuously; PC monitors)",
+                    "☁️ Cloud 24/7 Primary (Oracle Cloud VM executes continuously 24/7; PC monitors)",
                 ],
                 index=0 if exec_leader == "AUTO_FAILOVER" else 1 if exec_leader == "PC_PRIMARY" else 2,
                 key="sel_exec_leader_cfg",
@@ -680,6 +731,235 @@ def render_mode0():
                         """),
                         unsafe_allow_html=True
                     )
+
+    # ── 🎭 Autonomous 4-Persona Quant Sandbox (Accelerated Machine Learning) ──
+    seed_sandbox_if_empty()
+    active_user = st.session_state.get("authenticated_user")
+    p_metrics = get_persona_aggregate_metrics()
+    all_personas = get_all_personas()
+    p_budgets = get_persona_budgets(user_id=active_user)
+    p_active = get_persona_active(user_id=active_user)
+    recent_p_trades = get_persona_simulations(limit=8)
+
+    with st.expander("🎭 Autonomous 4-Persona Quant Sandbox (Accelerated Machine Learning)", expanded=True):
+        st.markdown(
+            """
+            <div style="background:#0D1117; border:1px solid #30363D; border-radius:8px; padding:12px 16px; margin-bottom:14px;">
+                <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+                    <span style="color:#58A6FF; font-weight:800; font-size:14px;">🚀 Multi-Agent Ensemble Simulation Engine</span>
+                    <span style="background:#23863622; color:#3FB950; border:1px solid #23863655; padding:2px 8px; border-radius:12px; font-size:10px; font-weight:700;">4x State-Space Acceleration</span>
+                </div>
+                <div style="font-size:12px; color:#8B949E; margin-top:6px; line-height:1.4;">
+                    To prevent human emotional noise from polluting the neural model, FinVision runs <strong>4 orthogonal algorithmic personas</strong> concurrently in simulation. 
+                    This institutional reinforcement learning sandbox discovers which strategies thrive in current Dalal Street regimes without risking your primary capital ledger.
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+
+        c_p1, c_p2, c_p3, c_p4 = st.columns(4)
+        cols = [c_p1, c_p2, c_p3, c_p4]
+        for idx, (pid, pinfo) in enumerate(all_personas.items()):
+            met = p_metrics.get(pid, {})
+            tot_t = met.get("trades", 0)
+            wr = met.get("win_rate", 0.0)
+            pnl = met.get("total_pnl", 0.0)
+            alloc = p_budgets.get(pid, 50000.0)
+            is_active = p_active.get(pid, True)
+            pnl_c = "#3FB950" if pnl >= 0 else "#F85149"
+            card_top_border = pinfo['color'] if is_active else "#30363D"
+            card_opacity = "1.0" if is_active else "0.65"
+
+            status_badge = (
+                f'<div style="font-size:11px; color:#58A6FF; font-weight:700; margin-top:3px;">Budget: ₹{alloc:,.0f}</div>'
+                if is_active else
+                '<div style="font-size:10px; color:#8B949E; font-weight:700; margin-top:3px; background:#21262D; border:1px solid #30363D; border-radius:10px; padding:1px 8px; display:inline-block;">⏸️ PAUSED</div>'
+            )
+
+            with cols[idx]:
+                st.markdown(
+                    f"""
+                    <div style="background:#161B22; border:1px solid #30363D; border-top:3px solid {card_top_border}; border-radius:8px; padding:12px; text-align:center; opacity:{card_opacity};">
+                        <div style="font-weight:800; font-size:13px; color:#F0F6FC;">{pinfo['name']}</div>
+                        <div style="font-size:10px; color:{pinfo['color']}; font-weight:700; margin-top:2px;">Regime: {pinfo['regime']}</div>
+                        {status_badge}
+                        <div style="margin:8px 0 4px 0;">
+                            <span style="font-size:20px; font-weight:800; color:{pnl_c};">{'+' if pnl > 0 else ''}{pnl:.1f}%</span>
+                            <div style="font-size:11px; color:#8B949E;">Simulated Return</div>
+                        </div>
+                        <div style="display:flex; justify-content:space-around; font-size:11px; border-top:1px solid #21262D; padding-top:6px; margin-top:6px;">
+                            <div><strong>{wr:.0f}%</strong> Win Rate</div>
+                            <div><strong>{tot_t}</strong> Trades</div>
+                        </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True
+                )
+
+        # ── Interactive Persona Budget Allocation & Toggles Drawer ───────────
+        with st.expander("⚙️ Persona Toggles & Capital Allocation (My Profile Only)", expanded=False):
+            st.caption("Enable or disable specific personas and set their allocated virtual capital. These settings are strictly isolated to your logged-in account.")
+            c_b1, c_b2, c_b3, c_b4 = st.columns(4)
+            with c_b1:
+                st.markdown("**⚡ Alpha Momentum**")
+                act_mom = st.checkbox("Active", value=p_active.get("MOMENTUM_HUNTER", True), key="cfg_act_mom")
+                b_mom = st.number_input("Budget (₹)", min_value=1000.0 if act_mom else 0.0, value=float(p_budgets.get("MOMENTUM_HUNTER", 50000.0)), step=5000.0, key="cfg_b_mom", disabled=not act_mom)
+            with c_b2:
+                st.markdown("**🔄 Delta Mean Revert**")
+                act_mr = st.checkbox("Active", value=p_active.get("MEAN_REVERTER", True), key="cfg_act_mr")
+                b_mr = st.number_input("Budget (₹)", min_value=1000.0 if act_mr else 0.0, value=float(p_budgets.get("MEAN_REVERTER", 50000.0)), step=5000.0, key="cfg_b_mr", disabled=not act_mr)
+            with c_b3:
+                st.markdown("**🛡️ Sigma Value**")
+                act_val = st.checkbox("Active", value=p_active.get("CONSERVATIVE_VALUE", True), key="cfg_act_val")
+                b_val = st.number_input("Budget (₹)", min_value=1000.0 if act_val else 0.0, value=float(p_budgets.get("CONSERVATIVE_VALUE", 50000.0)), step=5000.0, key="cfg_b_val", disabled=not act_val)
+            with c_b4:
+                st.markdown("**🌪️ Vega Breakout**")
+                act_vol = st.checkbox("Active", value=p_active.get("VOLATILITY_BREAKOUT", True), key="cfg_act_vol")
+                b_vol = st.number_input("Budget (₹)", min_value=1000.0 if act_vol else 0.0, value=float(p_budgets.get("VOLATILITY_BREAKOUT", 50000.0)), step=5000.0, key="cfg_b_vol", disabled=not act_vol)
+
+            tot_p_alloc = (b_mom if act_mom else 0.0) + (b_mr if act_mr else 0.0) + (b_val if act_val else 0.0) + (b_vol if act_vol else 0.0)
+            c_sav_l, c_sav_r = st.columns([2, 1])
+            with c_sav_l:
+                active_count = sum([act_mom, act_mr, act_val, act_vol])
+                st.caption(f"Active Personas: **{active_count}/4** | Total Active Capital: **₹{tot_p_alloc:,.0f}** (Profile: `{active_user or 'admin'}`)")
+            with c_sav_r:
+                if st.button("💾 Save Persona Settings", key="btn_save_persona_budgets", type="primary", use_container_width=True):
+                    save_persona_budgets({
+                        "MOMENTUM_HUNTER": b_mom if act_mom else 0.0,
+                        "MEAN_REVERTER": b_mr if act_mr else 0.0,
+                        "CONSERVATIVE_VALUE": b_val if act_val else 0.0,
+                        "VOLATILITY_BREAKOUT": b_vol if act_vol else 0.0,
+                    }, user_id=active_user)
+                    save_persona_active({
+                        "MOMENTUM_HUNTER": act_mom,
+                        "MEAN_REVERTER": act_mr,
+                        "CONSERVATIVE_VALUE": act_val,
+                        "VOLATILITY_BREAKOUT": act_vol,
+                    }, user_id=active_user)
+                    st.toast("✅ Persona toggles and capital budgets saved for your profile!", icon="💾")
+                    st.rerun()
+
+        st.markdown("<div style='margin-top:14px; margin-bottom:6px; font-size:12px; font-weight:700; color:#C9D1D9;'>📜 Recent Autonomous Persona Decisions & Simulations:</div>", unsafe_allow_html=True)
+        for pt in recent_p_trades[:5]:
+            pid = pt.get("persona_id", "")
+            p_obj = all_personas.get(pid, {})
+            p_name = p_obj.get("name", pid)
+            p_clr = p_obj.get("color", "#58A6FF")
+            sym = pt.get("symbol", "")
+            ent = float(pt.get("entry_price", 0.0))
+            tgt = float(pt.get("target_price", 0.0))
+            sl = float(pt.get("stop_loss", 0.0))
+            stat = pt.get("status", "OPEN")
+            pnl = float(pt.get("pnl_pct", 0.0))
+            rsn = pt.get("reasoning", "")
+            st_badge = (
+                '<span style="background:#23863622; color:#3FB950; border:1px solid #23863655; padding:2px 6px; border-radius:10px; font-size:10px; font-weight:700;">🎯 TARGET HIT</span>'
+                if stat == "TARGET_HIT"
+                else '<span style="background:#F8514922; color:#F85149; border:1px solid #F8514955; padding:2px 6px; border-radius:10px; font-size:10px; font-weight:700;">🛑 STOP HIT</span>'
+                if stat == "STOP_HIT"
+                else '<span style="background:#1F6FEB22; color:#58A6FF; border:1px solid #1F6FEB55; padding:2px 6px; border-radius:10px; font-size:10px; font-weight:700;">⚡ ACTIVE</span>'
+            )
+            st.markdown(
+                f"""
+                <div style="background:#0D1117; border:1px solid #21262D; border-left:3px solid {p_clr}; border-radius:6px; padding:8px 12px; margin-bottom:6px;">
+                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                        <div>
+                            <span style="color:{p_clr}; font-weight:700; font-size:11px;">{p_name}</span> · 
+                            <strong>{sym}</strong> @ ₹{ent:,.2f}
+                        </div>
+                        <div>{st_badge} <span style="font-weight:700; color:{'#3FB950' if pnl>=0 else '#F85149'}; font-size:11px; margin-left:6px;">{'+' if pnl>0 else ''}{pnl:.1f}%</span></div>
+                    </div>
+                    <div style="font-size:11px; color:#8B949E; margin-top:3px;">
+                        🎯 Target: ₹{tgt:,.2f} | 🛑 Stop: ₹{sl:,.2f} | <em>{rsn}</em>
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+
+    st.divider()
+
+    # ── 🧪 Synthetic Sector Pods (Automated Multi-Cohort Test Harness) ────────
+    try:
+        from utils.synthetic_cohorts import get_cohort_comparative_matrix, purge_synthetic_cohorts, run_cohort_simulation_cycle
+        cohort_matrix = get_cohort_comparative_matrix()
+    except Exception as e_c_mat:
+        cohort_matrix = []
+
+    with st.expander("🧪 Synthetic Sector Pods (Automated Multi-Cohort Test Harness)", expanded=False):
+        st.markdown(
+            """
+            <div style="background:#0D1117; border:1px solid #30363D; border-radius:8px; padding:12px 16px; margin-bottom:14px;">
+                <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+                    <span style="color:#A371F7; font-weight:800; font-size:14px;">🏛️ 5 Parallel Sector Pods (Automated State-Space Coverage)</span>
+                    <span style="background:#8957e522; color:#D2A8FF; border:1px solid #8957e555; padding:2px 8px; border-radius:12px; font-size:10px; font-weight:700;">Synthetic Cohorts</span>
+                </div>
+                <div style="font-size:12px; color:#8B949E; margin-top:6px; line-height:1.4;">
+                    To accelerate quantitative learning without relying on friends, the system runs <strong>5 automated synthetic cohorts</strong> across distinct Dalal Street sectors and capital tiers.
+                    These pods forward-simulate trades in parallel during market hours to cross-validate strategy efficacy.
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+
+        if cohort_matrix:
+            c_pod_cols = st.columns(len(cohort_matrix))
+            for i, pod in enumerate(cohort_matrix):
+                with c_pod_cols[i]:
+                    ret_c = "#3FB950" if pod["avg_return_pct"] >= 0 else "#F85149"
+                    st.markdown(
+                        f"""
+                        <div style="background:#161B22; border:1px solid #30363D; border-top:3px solid {pod['color']}; border-radius:8px; padding:10px; text-align:center;">
+                            <div style="font-weight:800; font-size:12px; color:#F0F6FC;">{pod['name'].replace('Synthetic Pod: ', '')}</div>
+                            <div style="font-size:10px; color:#8B949E; margin-top:2px;">{pod['sector']}</div>
+                            <div style="font-size:11px; color:#58A6FF; font-weight:700; margin-top:4px;">Cap: ₹{pod['capital']:,.0f}</div>
+                            <div style="margin:6px 0;">
+                                <span style="font-size:18px; font-weight:800; color:{ret_c};">{'+' if pod['avg_return_pct'] > 0 else ''}{pod['avg_return_pct']:.1f}%</span>
+                                <div style="font-size:10px; color:#8B949E;">Avg Return</div>
+                            </div>
+                            <div style="display:flex; justify-content:space-around; font-size:10px; border-top:1px solid #21262D; padding-top:4px; margin-top:4px;">
+                                <div><strong>{pod['win_rate']:.0f}%</strong> Win</div>
+                                <div><strong>{pod['trades']}</strong> Trd</div>
+                            </div>
+                        </div>
+                        """,
+                        unsafe_allow_html=True
+                    )
+
+        c_act_l, c_act_r = st.columns([1.5, 1])
+        with c_act_l:
+            if st.button("⚡ Trigger Manual Cohort Forward Evaluation", key="btn_run_cohort_eval", use_container_width=True):
+                with st.spinner("Evaluating 5 synthetic sector pods across Dalal Street..."):
+                    res = run_cohort_simulation_cycle()
+                    st.success(f"Executed forward evaluation across all 5 pods! Active entries: {res}")
+                    st.rerun()
+
+        # Guarded Retirement Drawer
+        with st.expander("🗑️ Retire Synthetic Cohorts (Protected Cleanup)", expanded=False):
+            st.warning(
+                "🛡️ **SAFETY GUARANTEE**: This operation will **ONLY** delete synthetic testing accounts (`synthetic_pod_*`). "
+                "Your primary administrator account (**`shrihari`**) and any genuine human accounts are strictly protected by hardcoded safety guards and will **NEVER** be touched. "
+                "A full snapshot backup is automatically saved to `data/backups/` before deletion."
+            )
+            c_del1, c_del2 = st.columns([2, 1])
+            with c_del1:
+                confirm_txt = st.text_input(
+                    "Type 'PURGE_SYNTHETIC_ONLY' to confirm:",
+                    placeholder="PURGE_SYNTHETIC_ONLY",
+                    key="input_purge_confirm_code"
+                )
+            with c_del2:
+                st.write("")
+                st.write("")
+                if st.button("🚨 Confirm Purge of Synthetic Pods", key="btn_confirm_purge_synthetic", type="secondary", use_container_width=True):
+                    ok_p, p_msg = purge_synthetic_cohorts(confirm_txt)
+                    if ok_p:
+                        st.success(p_msg)
+                        st.rerun()
+                    else:
+                        st.error(p_msg)
 
     st.divider()
 

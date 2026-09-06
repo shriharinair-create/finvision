@@ -17,11 +17,25 @@ The AI scientifically fact-checks the rule by:
 
 from __future__ import annotations
 
+import math
 import re
 from typing import Any, Dict, List, Optional
 import numpy as np
 import pandas as pd
 import yfinance as yf
+
+
+def compute_binomial_p_value(k: int, n: int, p0: float = 0.5) -> float:
+    """
+    Computes exact one-sided binomial p-value P(X >= k | n, p0).
+    Tests the null hypothesis that win rate is no better than random 50/50 chance.
+    """
+    if n <= 0 or k > n:
+        return 1.0
+    if k <= 0:
+        return 1.0
+    prob = sum(math.comb(n, i) * (p0 ** i) * ((1.0 - p0) ** (n - i)) for i in range(k, n + 1))
+    return min(1.0, max(0.0, float(prob)))
 
 
 def parse_veteran_rule(rule_text: str) -> dict[str, Any]:
@@ -244,32 +258,51 @@ def fact_check_veteran_rule(
     gross_loss = abs(sum(s["return_pct"] for s in losses)) if losses else 0.0
     profit_factor = round(gross_profit / max(0.01, gross_loss), 2)
 
-    # Decision Engine: Validate vs Debunk
-    if total_signals >= 5 and win_rate >= 55.0 and profit_factor >= 1.35 and avg_ret > 0.40:
+    p_val = compute_binomial_p_value(len(wins), total_signals, p0=0.50)
+
+    # Decision Engine: Validate vs Debunk with Sample Size & p-value Gating
+    if total_signals < 10:
+        status = "INSUFFICIENT_DATA"
+        verdict = f"⚠️ INSUFFICIENT SAMPLE ({total_signals} setups < 10)"
+        badge_color = "#8B949E"
+        explanation = (
+            f"Sample size too small to evaluate: Only {total_signals} triggers occurred across historical data on {ticker}. "
+            f"Statistically, a minimum of 30 triggers is required to distinguish true alpha from random noise."
+        )
+    elif total_signals < 30:
+        status = "OBSERVATION_SAMPLE"
+        verdict = f"📊 SMALL SAMPLE ({total_signals}/30 triggers, p={p_val:.3f})"
+        badge_color = "#FFB300"
+        explanation = (
+            f"Preliminary observation sample: {total_signals} triggers, {win_rate}% win rate, {profit_factor}x profit factor "
+            f"(binomial p={p_val:.3f}). While {('positive' if avg_ret > 0 else 'negative')}, this cannot be validated as active alpha "
+            f"until at least 30 triggers confirm statistical significance at p < 0.05."
+        )
+    elif total_signals >= 30 and win_rate >= 55.0 and profit_factor >= 1.35 and avg_ret > 0.35 and p_val < 0.05:
         status = "VALIDATED_ACTIVE"
-        verdict = "✅ EMPIRICALLY VALIDATED ALPHA RULE"
+        verdict = f"✅ EMPIRICALLY VALIDATED ALPHA (N={total_signals}, p={p_val:.3f})"
         badge_color = "#00E676"
         explanation = (
-            f"Edge Confirmed! The rule achieved a **{win_rate}% win rate** and **{profit_factor}x profit factor** "
-            f"across {total_signals} occurrences on {ticker} (Avg move: +{avg_ret}% over {horizon} days). "
-            f"This wisdom has been incorporated into the AI's active knowledge base."
+            f"Statistical Edge Confirmed! The rule achieved a **{win_rate}% win rate** and **{profit_factor}x profit factor** "
+            f"across {total_signals} occurrences on {ticker} (Avg return: +{avg_ret}%, p={p_val:.4f} < 0.05). "
+            f"Rigorous binomial testing rejects random chance; rule promoted to active alpha knowledge base."
         )
-    elif total_signals >= 5 and (win_rate < 46.0 or profit_factor < 0.90 or avg_ret < 0.0):
+    elif total_signals >= 30 and (win_rate < 46.0 or profit_factor < 0.90 or avg_ret < 0.0):
         status = "REJECTED_MYTH"
-        verdict = "❌ DEBUNKED RETAIL MYTH"
+        verdict = f"❌ DEBUNKED RETAIL MYTH (N={total_signals})"
         badge_color = "#FF5252"
         explanation = (
-            f"Advice Debunked. Over {total_signals} historical setups on {ticker}, following this advice yielded "
-            f"only a **{win_rate}% win rate** and a **negative expected return of {avg_ret}%** (Profit factor: {profit_factor}x). "
-            f"The AI rejected this rule to protect your capital from unbacked market folklore."
+            f"Advice Debunked with statistical confidence. Across {total_signals} setups on {ticker}, following this advice yielded "
+            f"only a **{win_rate}% win rate** and an **average return of {avg_ret}%** (Profit factor: {profit_factor}x). "
+            f"Rejected to protect capital from unbacked market folklore."
         )
     else:
         status = "MONITORING"
-        verdict = "⚠️ INCONCLUSIVE / MODERATE EDGE"
+        verdict = f"⚠️ INCONCLUSIVE EDGE (N={total_signals}, p={p_val:.3f})"
         badge_color = "#FFB300"
         explanation = (
-            f"Sample size too small or edge is marginal ({total_signals} triggers, {win_rate}% win rate, {avg_ret:+.2f}% avg return). "
-            f"Stored in observation journal for ongoing forward tracking."
+            f"Inconclusive statistical edge across {total_signals} setups ({win_rate}% win rate, p={p_val:.3f}, avg return {avg_ret:+.2f}%). "
+            f"Stored in observation journal for forward paper tracking."
         )
 
     return {
@@ -279,6 +312,7 @@ def fact_check_veteran_rule(
         "target_ticker": ticker,
         "win_rate_pct": win_rate,
         "occurrences": total_signals,
+        "p_value": round(p_val, 4),
         "avg_return_pct": avg_ret,
         "profit_factor": profit_factor,
         "summary_report": explanation,

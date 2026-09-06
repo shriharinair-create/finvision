@@ -701,3 +701,131 @@ def detect_delivery_accumulation_anomaly(df: pd.DataFrame) -> dict[str, Any]:
         "status": status
     }
 
+
+
+
+
+def supertrend(df: pd.DataFrame, period: int = 10, multiplier: float = 3.0) -> dict[str, pd.Series]:
+    """
+    Supertrend indicator calculated using ATR and Basic/Final Upper & Lower bands.
+    Returns {'supertrend': pd.Series, 'direction': pd.Series (1 for bullish, -1 for bearish)}.
+    """
+    if df.empty or len(df) < period + 1:
+        empty = pd.Series([float("nan")] * len(df), index=df.index)
+        return {"supertrend": empty, "direction": empty}
+
+    high = df["High"].astype(float)
+    low = df["Low"].astype(float)
+    close = df["Close"].astype(float)
+
+    # Calculate True Range
+    tr0 = high - low
+    tr1 = (high - close.shift(1)).abs()
+    tr2 = (low - close.shift(1)).abs()
+    tr = pd.concat([tr0, tr1, tr2], axis=1).max(axis=1)
+    atr = tr.ewm(alpha=1.0 / period, adjust=False).mean()
+
+    hl2 = (high + low) / 2.0
+    basic_upper = hl2 + (multiplier * atr)
+    basic_lower = hl2 - (multiplier * atr)
+
+    final_upper = basic_upper.copy()
+    final_lower = basic_lower.copy()
+    supertrend_vals = pd.Series(index=df.index, dtype=float)
+    direction = pd.Series(index=df.index, dtype=int)
+
+    for i in range(1, len(df)):
+        # Final upper band
+        if basic_upper.iloc[i] < final_upper.iloc[i - 1] or close.iloc[i - 1] > final_upper.iloc[i - 1]:
+            final_upper.iloc[i] = basic_upper.iloc[i]
+        else:
+            final_upper.iloc[i] = final_upper.iloc[i - 1]
+
+        # Final lower band
+        if basic_lower.iloc[i] > final_lower.iloc[i - 1] or close.iloc[i - 1] < final_lower.iloc[i - 1]:
+            final_lower.iloc[i] = basic_lower.iloc[i]
+        else:
+            final_lower.iloc[i] = final_lower.iloc[i - 1]
+
+        # Supertrend value & direction
+        if i == 1:
+            if close.iloc[i] <= final_upper.iloc[i]:
+                supertrend_vals.iloc[i] = final_upper.iloc[i]
+                direction.iloc[i] = -1
+            else:
+                supertrend_vals.iloc[i] = final_lower.iloc[i]
+                direction.iloc[i] = 1
+        else:
+            prev_dir = direction.iloc[i - 1]
+            if prev_dir == 1:
+                if close.iloc[i] < final_lower.iloc[i]:
+                    supertrend_vals.iloc[i] = final_upper.iloc[i]
+                    direction.iloc[i] = -1
+                else:
+                    supertrend_vals.iloc[i] = final_lower.iloc[i]
+                    direction.iloc[i] = 1
+            else:
+                if close.iloc[i] > final_upper.iloc[i]:
+                    supertrend_vals.iloc[i] = final_lower.iloc[i]
+                    direction.iloc[i] = 1
+                else:
+                    supertrend_vals.iloc[i] = final_upper.iloc[i]
+                    direction.iloc[i] = -1
+
+    return {"supertrend": supertrend_vals, "direction": direction}
+
+
+def pivot_points(df: pd.DataFrame) -> dict[str, float]:
+    """
+    Computes Standard Floor Pivots and Camarilla Pivots from previous session.
+    """
+    if df.empty or len(df) < 2:
+        return {}
+    prev_bar = df.iloc[-2]
+    h = float(prev_bar["High"])
+    l = float(prev_bar["Low"])
+    c = float(prev_bar["Close"])
+    
+    # Classical Floor Pivots
+    p = (h + l + c) / 3.0
+    r1 = (2.0 * p) - l
+    s1 = (2.0 * p) - h
+    r2 = p + (h - l)
+    s2 = p - (h - l)
+    r3 = h + 2.0 * (p - l)
+    s3 = l - 2.0 * (h - p)
+
+    # Camarilla Pivots
+    diff = h - l
+    cam_r4 = c + (diff * 1.1 / 2.0)
+    cam_r3 = c + (diff * 1.1 / 4.0)
+    cam_s3 = c - (diff * 1.1 / 4.0)
+    cam_s4 = c - (diff * 1.1 / 2.0)
+
+    return {
+        "pivot": round(p, 2),
+        "r1": round(r1, 2),
+        "s1": round(s1, 2),
+        "r2": round(r2, 2),
+        "s2": round(s2, 2),
+        "r3": round(r3, 2),
+        "s3": round(s3, 2),
+        "cam_r4": round(cam_r4, 2),
+        "cam_r3": round(cam_r3, 2),
+        "cam_s3": round(cam_s3, 2),
+        "cam_s4": round(cam_s4, 2),
+    }
+
+
+def circuit_limits(prev_close: float, circuit_pct: float = 10.0) -> dict[str, float]:
+    """
+    Calculates estimated upper and lower circuit bands for Indian equities.
+    """
+    if not prev_close or prev_close <= 0:
+        return {"upper": 0.0, "lower": 0.0, "pct": circuit_pct}
+    multiplier = circuit_pct / 100.0
+    upper = round(prev_close * (1.0 + multiplier), 2)
+    lower = round(prev_close * (1.0 - multiplier), 2)
+    return {"upper": upper, "lower": lower, "pct": circuit_pct}
+
+

@@ -1,0 +1,34 @@
+# Database & State files
+*.db
+*.sqlite
+*.sqlite3
+finvision_data.db
+finvision_sync_state.json
+data/users/
+data/users_registry.json
+data/user_preferences.json
+
+# Caching & Python runtime
+__pycache__/
+*.py[cod]
+*.class
+.pytest_cache/
+chroma_news_db/
+
+# Secrets & Environment variables
+.env
+.env.*
+secrets.toml
+*.pem
+*.key
+
+# Temporary files & Logs
+*.log
+*.tmp
+backups/
+scratch/
+Misc/
+
+# Large binaries & generated PDFs
+*.pdf
+guide_assets/

@@ -27,6 +27,7 @@ import pandas as pd
 from utils.ml_ensemble import compute_ml_ensemble_consensus
 from utils.risk import compute_institutional_var_cvar
 from utils.macro import get_live_cross_asset_macro
+from utils.adaptive_weights import get_forecasting_regime_weights
 
 
 def compute_quantitative_confluence_forecast(
@@ -36,6 +37,8 @@ def compute_quantitative_confluence_forecast(
     news_sentiment_score: float = 0.0,
     catalyst_score: float = 0.0,
     pre_market_gap_pct: float = 0.0,
+    is_backtest: bool = False,
+    macro_score: Optional[float] = None,
 ) -> dict[str, Any]:
     """
     Computes a multi-modal quantitative confluence forecast for a given stock.
@@ -222,48 +225,35 @@ def compute_quantitative_confluence_forecast(
         rs_score = -0.40
 
     # ── 6. Market Benchmark Regime & Cross-Asset Macro Headwind ─────────────
-    # Fetch real-time macro conditions (Crude, USD/INR, Gold)
-    try:
-        macro_env = get_live_cross_asset_macro()
-        macro_headwind = float(macro_env.get("composite_score", 0.0))
-    except Exception:
-        macro_env = {"macro_badge": "⚪ MACRO NEUTRAL", "composite_score": 0.0, "primary_drivers": []}
-        macro_headwind = 0.0
+    # When running an out-of-sample historical backtest, strictly isolate macro
+    # to avoid lookahead leakage from today's real-time prices.
+    if is_backtest:
+        macro_headwind = float(macro_score) if macro_score is not None else 0.0
+        macro_env = {
+            "macro_badge": "🔒 BACKTEST ISOLATED",
+            "composite_score": macro_headwind,
+            "primary_drivers": ["Lookahead leakage strictly neutralized for backtest"]
+        }
+    else:
+        try:
+            macro_env = get_live_cross_asset_macro()
+            macro_headwind = float(macro_env.get("composite_score", 0.0))
+        except Exception:
+            macro_env = {"macro_badge": "⚪ MACRO NEUTRAL", "composite_score": 0.0, "primary_drivers": []}
+            macro_headwind = 0.0
 
     regime_score = float(np.clip(mkt_regime_drag + (rs_score * 0.65) + macro_headwind, -1.0, 1.0))
 
     # ── 7. Dynamic Regime-Adaptive Indicator Weighting Engine ────────────────
-    # Dynamically shifts indicator importance depending on market state:
-    #   A) Strong Trending Bull/Bear Expansion: Trend Structure (38%) and Flow dominate
-    #   B) Choppy / Neutral Consolidation: Mean-reverting Oscillators (36%) and S/R dominate
-    #   C) Bearish Markdown / Crisis: Macro Headwind & Defensive Regime (36%) dominate
+    # Unified Single Source of Truth via utils.adaptive_weights
     catalyst_intensity = max(abs(news_sentiment_score), abs(catalyst_score))
-    if catalyst_intensity >= 0.25:
-        w_news = min(0.35, 0.18 + 0.25 * (catalyst_intensity - 0.20))
-        w_core = 1.0 - w_news
-    else:
-        w_news = 0.12
-        w_core = 0.88
-
-    # Adaptive Weight Allocation:
-    if regime_score > 0.20:
-        w_trend = w_core * 0.38
-        w_mom = w_core * 0.26
-        w_flow = w_core * 0.20
-        w_regime = w_core * 0.16
-        regime_mode_label = "Trending Expansion"
-    elif regime_score < -0.20:
-        w_trend = w_core * 0.18
-        w_mom = w_core * 0.16
-        w_flow = w_core * 0.30
-        w_regime = w_core * 0.36
-        regime_mode_label = "Bear Correction (Defensive)"
-    else:
-        w_trend = w_core * 0.15
-        w_mom = w_core * 0.36
-        w_flow = w_core * 0.31
-        w_regime = w_core * 0.18
-        regime_mode_label = "Consolidation Range (Mean-Reverting)"
+    weight_profile = get_forecasting_regime_weights(regime_score, catalyst_intensity=catalyst_intensity)
+    w_trend = weight_profile["w_trend"]
+    w_mom = weight_profile["w_mom"]
+    w_flow = weight_profile["w_flow"]
+    w_regime = weight_profile["w_regime"]
+    w_news = weight_profile["w_news"]
+    regime_mode_label = weight_profile["regime_label"]
 
     # Short-Squeeze / Oversold Rebound Multiplier
     squeeze_mult = 1.0
@@ -690,8 +680,9 @@ def run_walk_forward_backtest(
         test_start_d = test_sub.index[0].strftime("%Y-%m-%d")
         test_end_d = test_sub.index[-1].strftime("%Y-%m-%d")
 
+        # Strictly isolate historical fold from live macro lookahead
         fc = compute_quantitative_confluence_forecast(
-            train_sub, nse_df=nse_df, forecast_days=len(test_sub)
+            train_sub, nse_df=nse_df, forecast_days=len(test_sub), is_backtest=True
         )
         if not fc:
             continue
@@ -727,10 +718,18 @@ def run_walk_forward_backtest(
         upper_b = last_proj.get("upper_bound_80ci", pred_p * 1.05)
         band_ok = (actual_test_p >= lower_b) and (actual_test_p <= upper_b)
 
+        # Calendar quarter of out-of-sample window for cluster robustness audit
+        try:
+            t_dt = pd.to_datetime(test_start_d)
+            cal_quarter = f"{t_dt.year}-Q{(t_dt.month - 1) // 3 + 1}"
+        except Exception:
+            cal_quarter = "Unknown"
+
         window_results.append({
             "window": f"W-{w}",
             "train_cutoff": train_date,
             "test_range": f"{test_start_d} to {test_end_d}",
+            "calendar_quarter": cal_quarter,
             "train_close": round(train_last_p, 2),
             "actual_close": round(actual_test_p, 2),
             "actual_return": round(actual_ret, 2),
@@ -768,6 +767,29 @@ def run_walk_forward_backtest(
     # 4. Root Mean Squared Error (RMSE)
     rmse_val = round(float(np.sqrt(np.mean([(pr - ar)**2 for pr, ar in zip(pred_returns, actual_returns)]))), 2)
 
+    # 5. Calendar Quarter Clustering (audits cross-asset temporal consistency)
+    quarter_clusters: dict[str, dict[str, Any]] = {}
+    for w_res in window_results:
+        q = w_res.get("calendar_quarter", "Unknown")
+        if q not in quarter_clusters:
+            quarter_clusters[q] = {"total": 0, "hits": 0, "ci_covered": 0}
+        quarter_clusters[q]["total"] += 1
+        if "HIT" in w_res["dir_hit"]:
+            quarter_clusters[q]["hits"] += 1
+        if "COVERED" in w_res["ci_covered"]:
+            quarter_clusters[q]["ci_covered"] += 1
+
+    quarterly_summary = []
+    for q, data in sorted(quarter_clusters.items()):
+        q_tot = data["total"]
+        q_hit_pct = round((data["hits"] / q_tot) * 100.0, 1) if q_tot > 0 else 0.0
+        quarterly_summary.append({
+            "quarter": q,
+            "windows": q_tot,
+            "hit_rate_pct": q_hit_pct,
+            "edge_pct": round(q_hit_pct - baseline_coin_flip, 1),
+        })
+
     return {
         "available": True,
         "total_windows": n_win,
@@ -786,6 +808,7 @@ def run_walk_forward_backtest(
         "rmse_pct": rmse_val,
         "rmse_price_points": rmse_val,
         "window_results": window_results,
+        "quarterly_summary": quarterly_summary,
         "audit_df": pd.DataFrame(window_results)
     }
 

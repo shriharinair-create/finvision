@@ -742,3 +742,337 @@ def plot_intraday_5m_session_forecast(session_fc: dict[str, Any], title: Optiona
         paper_bgcolor="rgba(0, 0, 0, 0)"
     )
     return fig
+
+
+# ── Advanced Interactive Manual Trading Chart (Kite / Groww Grade) ───────────
+
+def make_advanced_manual_trading_chart(
+    df: pd.DataFrame,
+    ticker: str,
+    timeframe: str = "1D",
+    show_ema9: bool = True,
+    show_ema21: bool = True,
+    show_ema50: bool = False,
+    show_ema200: bool = False,
+    show_vwap: bool = True,
+    show_supertrend: bool = False,
+    show_bollinger: bool = False,
+    show_pivots: bool = False,
+    pivots_dict: dict | None = None,
+    show_rsi: bool = True,
+    show_macd: bool = False,
+    entry_level: float | None = None,
+    target_level: float | None = None,
+    stop_loss_level: float | None = None,
+) -> go.Figure:
+    """
+    Institutional multi-indicator chart designed for manual trading.
+    Replicates TradingView/Kite/Groww ergonomics with customizable overlays.
+    """
+    if df.empty or len(df) < 2:
+        fig = go.Figure()
+        fig.add_annotation(
+            text=f"No candlestick data available for {ticker} ({timeframe})",
+            x=0.5, y=0.5, showarrow=False,
+            font=dict(color=TEXT2, size=14)
+        )
+        return _apply_base(fig)
+
+    # Determine subplot rows
+    has_rsi = show_rsi and len(df) > 14
+    has_macd = show_macd and len(df) > 26
+
+    rows = 1
+    row_heights = [1.0]
+    if has_rsi and has_macd:
+        rows = 3
+        row_heights = [0.64, 0.18, 0.18]
+    elif has_rsi or has_macd:
+        rows = 2
+        row_heights = [0.76, 0.24]
+
+    fig = make_subplots(
+        rows=rows, cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.03,
+        row_heights=row_heights,
+        specs=[[{"secondary_y": True}]] + [[{"secondary_y": False}]] * (rows - 1)
+    )
+
+    # 1. Main Candlesticks
+    fig.add_trace(
+        go.Candlestick(
+            x=df.index,
+            open=df["Open"],
+            high=df["High"],
+            low=df["Low"],
+            close=df["Close"],
+            name=f"{ticker} ({timeframe})",
+            increasing=dict(line=dict(color=GREEN, width=1), fillcolor=GREEN),
+            decreasing=dict(line=dict(color=RED, width=1), fillcolor=RED),
+        ),
+        row=1, col=1, secondary_y=False
+    )
+
+    close = df["Close"].astype(float)
+
+    # 2. Volume Overlay (TradingView style on secondary Y)
+    if "Volume" in df.columns:
+        vol_colors = [
+            "rgba(63, 185, 80, 0.22)" if c >= o else "rgba(248, 81, 73, 0.22)"
+            for c, o in zip(df["Close"], df["Open"])
+        ]
+        max_vol = float(df["Volume"].max()) if not df["Volume"].empty else 1.0
+        fig.add_trace(
+            go.Bar(
+                x=df.index,
+                y=df["Volume"],
+                name="Volume",
+                marker_color=vol_colors,
+                showlegend=False,
+            ),
+            row=1, col=1, secondary_y=True
+        )
+        fig.update_yaxes(
+            range=[0, max_vol * 4.0],  # Keeps volume bars confined to lower 25% of chart
+            showgrid=False,
+            showticklabels=False,
+            secondary_y=True,
+            row=1, col=1
+        )
+
+    # 3. Moving Averages
+    if show_ema9 and len(df) >= 9:
+        fig.add_trace(
+            go.Scatter(
+                x=df.index, y=ti.ema(close, 9),
+                name="EMA 9",
+                line=dict(color="#38BDF8", width=1.2),
+            ),
+            row=1, col=1, secondary_y=False
+        )
+
+    if show_ema21 and len(df) >= 21:
+        fig.add_trace(
+            go.Scatter(
+                x=df.index, y=ti.ema(close, 21),
+                name="EMA 21",
+                line=dict(color="#FBBF24", width=1.3),
+            ),
+            row=1, col=1, secondary_y=False
+        )
+
+    if show_ema50 and len(df) >= 50:
+        fig.add_trace(
+            go.Scatter(
+                x=df.index, y=ti.ema(close, 50),
+                name="EMA 50",
+                line=dict(color="#A855F7", width=1.4),
+            ),
+            row=1, col=1, secondary_y=False
+        )
+
+    if show_ema200 and len(df) >= 150:
+        fig.add_trace(
+            go.Scatter(
+                x=df.index, y=ti.ema(close, min(200, len(df))),
+                name=f"EMA {min(200, len(df))}",
+                line=dict(color="#F43F5E", width=1.6, dash="dash"),
+            ),
+            row=1, col=1, secondary_y=False
+        )
+
+    # 4. VWAP Overlay
+    if show_vwap and "Volume" in df.columns:
+        vwap_vals = ti.vwap(df)
+        if not vwap_vals.dropna().empty:
+            fig.add_trace(
+                go.Scatter(
+                    x=df.index, y=vwap_vals,
+                    name="VWAP",
+                    line=dict(color="#FB923C", width=1.8),
+                ),
+                row=1, col=1, secondary_y=False
+            )
+
+    # 5. Supertrend Overlay
+    if show_supertrend and len(df) > 10:
+        st_data = ti.supertrend(df, period=10, multiplier=3.0)
+        st_line = st_data["supertrend"]
+        if not st_line.dropna().empty:
+            fig.add_trace(
+                go.Scatter(
+                    x=df.index, y=st_line,
+                    name="Supertrend (10,3)",
+                    line=dict(color="#10B981", width=1.5, dash="dot"),
+                ),
+                row=1, col=1, secondary_y=False
+            )
+
+    # 6. Bollinger Bands
+    if show_bollinger and len(df) >= 20:
+        bb = ti.bollinger_bands(close, period=20, std_dev=2.0)
+        fig.add_trace(
+            go.Scatter(
+                x=df.index, y=bb["upper"],
+                name="BB Upper",
+                line=dict(color="rgba(148, 163, 184, 0.4)", width=1),
+                showlegend=False
+            ),
+            row=1, col=1, secondary_y=False
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=df.index, y=bb["lower"],
+                name="BB Lower",
+                line=dict(color="rgba(148, 163, 184, 0.4)", width=1),
+                fill="tonexty",
+                fillcolor="rgba(148, 163, 184, 0.06)",
+                showlegend=False
+            ),
+            row=1, col=1, secondary_y=False
+        )
+
+    # 7. Pivot Points (Horizontal Reference Lines)
+    if show_pivots and pivots_dict:
+        if "pivot" in pivots_dict:
+            fig.add_hline(
+                y=pivots_dict["pivot"], line_dash="dash", line_color="#F59E0B",
+                annotation_text=f"P: ₹{pivots_dict['pivot']:.2f}",
+                annotation_position="top right", row=1, col=1
+            )
+        if "r1" in pivots_dict:
+            fig.add_hline(
+                y=pivots_dict["r1"], line_dash="dot", line_color="#EF4444",
+                annotation_text=f"R1: ₹{pivots_dict['r1']:.2f}",
+                annotation_position="top right", row=1, col=1
+            )
+        if "s1" in pivots_dict:
+            fig.add_hline(
+                y=pivots_dict["s1"], line_dash="dot", line_color="#10B981",
+                annotation_text=f"S1: ₹{pivots_dict['s1']:.2f}",
+                annotation_position="bottom right", row=1, col=1
+            )
+
+    # 8. Order Levels (Entry, Target, Stop Loss)
+    if entry_level and entry_level > 0:
+        fig.add_hline(
+            y=entry_level, line_dash="dash", line_color="#38BDF8", line_width=1.5,
+            annotation_text=f"Entry: ₹{entry_level:.2f}",
+            annotation_position="top left", row=1, col=1
+        )
+    if target_level and target_level > 0:
+        fig.add_hline(
+            y=target_level, line_dash="dash", line_color="#22C55E", line_width=1.5,
+            annotation_text=f"Target: ₹{target_level:.2f}",
+            annotation_position="top left", row=1, col=1
+        )
+    if stop_loss_level and stop_loss_level > 0:
+        fig.add_hline(
+            y=stop_loss_level, line_dash="dash", line_color="#EF4444", line_width=1.5,
+            annotation_text=f"Stop: ₹{stop_loss_level:.2f}",
+            annotation_position="bottom left", row=1, col=1
+        )
+
+    # 9. Subplots: RSI and MACD
+    current_sub_row = 2
+    if has_rsi:
+        rsi_vals = ti.rsi(close, 14)
+        fig.add_trace(
+            go.Scatter(
+                x=df.index, y=rsi_vals,
+                name="RSI (14)",
+                line=dict(color="#A855F7", width=1.5),
+            ),
+            row=current_sub_row, col=1
+        )
+        fig.add_hline(y=70, line_dash="dot", line_color="rgba(239, 68, 68, 0.6)", row=current_sub_row, col=1)
+        fig.add_hline(y=30, line_dash="dot", line_color="rgba(34, 197, 94, 0.6)", row=current_sub_row, col=1)
+        fig.update_yaxes(
+            title_text="RSI", range=[10, 90],
+            gridcolor=GRID, zerolinecolor=GRID,
+            row=current_sub_row, col=1
+        )
+        current_sub_row += 1
+
+    if has_macd:
+        macd_dict = ti.macd(close)
+        m_line = macd_dict["macd"]
+        s_line = macd_dict["signal"]
+        hist = macd_dict["hist"]
+        hist_colors = [
+            GREEN if val >= 0 else RED
+            for val in hist
+        ]
+        fig.add_trace(
+            go.Bar(
+                x=df.index, y=hist,
+                name="MACD Hist",
+                marker_color=hist_colors,
+                opacity=0.6,
+            ),
+            row=current_sub_row, col=1
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=df.index, y=m_line,
+                name="MACD",
+                line=dict(color=BLUE, width=1.2),
+            ),
+            row=current_sub_row, col=1
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=df.index, y=s_line,
+                name="Signal",
+                line=dict(color=AMBER, width=1.2),
+            ),
+            row=current_sub_row, col=1
+        )
+        fig.update_yaxes(
+            title_text="MACD",
+            gridcolor=GRID, zerolinecolor=GRID,
+            row=current_sub_row, col=1
+        )
+
+    # Master Layout Configuration
+    fig.update_layout(
+        paper_bgcolor=BG_PLOT,
+        plot_bgcolor=BG_PLOT,
+        font=dict(family="IBM Plex Mono, monospace", color=TEXT2, size=11),
+        margin=dict(l=10, r=60, t=35, b=20),
+        height=680 if rows > 1 else 520,
+        hovermode="x unified",
+        xaxis=dict(
+            gridcolor=GRID,
+            rangeslider=dict(visible=False),
+            showspikes=True,
+            spikemode="across",
+            spikethickness=1,
+            spikecolor="rgba(255, 255, 255, 0.2)",
+            spikedash="dot"
+        ),
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.01,
+            xanchor="right",
+            x=1,
+            bgcolor="rgba(22, 27, 34, 0.7)",
+            font=dict(size=10, color=TEXT)
+        )
+    )
+    fig.update_yaxes(
+        side="right",
+        gridcolor=GRID,
+        showspikes=True,
+        spikemode="across",
+        spikethickness=1,
+        spikecolor="rgba(255, 255, 255, 0.2)",
+        spikedash="dot",
+        tickprefix="₹",
+        tickformat=".2f",
+        row=1, col=1, secondary_y=False
+    )
+
+    return fig

@@ -252,11 +252,16 @@ def retrain_ensemble_from_trade_journal(db_path: str = "./finvision_data.db") ->
         conn.close()
 
         total_samples = len(rows)
-        if total_samples < 3:
+        MIN_SAMPLES_FOR_RETRAIN = 100
+        if total_samples < MIN_SAMPLES_FOR_RETRAIN:
             return {
                 "status": "INSUFFICIENT_SAMPLES",
-                "message": f"Recorded {total_samples} closed trade(s). Requires at least 3 closed trades for statistical retraining.",
+                "message": (
+                    f"Recorded {total_samples} closed trade(s). Requires at least {MIN_SAMPLES_FOR_RETRAIN} closed trades "
+                    f"to ensure statistical significance, prevent small-sample variance, and guard against trade journal overfitting."
+                ),
                 "sample_count": total_samples,
+                "required_samples": MIN_SAMPLES_FOR_RETRAIN,
                 "empirical_win_rate": 0.0,
             }
 

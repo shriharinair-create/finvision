@@ -1,10 +1,11 @@
 """
 finvision/utils/adaptive_weights.py
 ===================================
-Dynamic Regime-Adaptive Confluence Weighting Engine.
+Dynamic Regime-Adaptive Confluence Weighting Engine (Single Source of Truth).
 
-Eliminates static, hardcoded indicator weights. Dynamically re-weights the
-6 core quantitative confluence pillars based on the prevailing market regime:
+Eliminates static, hardcoded indicator weights and duplicate weighting engines.
+Dynamically re-weights the core quantitative confluence pillars based on the
+prevailing market regime:
   - Bull Markup: Trend & Momentum dominate (high trend-following edge)
   - High Volatility Chop: Support/Resistance & Mean Reversion dominate
   - Bear Markdown: Capital preservation, ATR volatility bands, and resistance rejections dominate
@@ -16,49 +17,54 @@ from __future__ import annotations
 from typing import Any
 
 
-# ── Regime-Dependent Dynamic Weighting Matrices (Sum = 1.0) ───────────────────
+# ── Canonical Regime-Dependent Dynamic Weighting Profiles (Sum = 1.0) ─────────
 REGIME_WEIGHT_PROFILES: dict[str, dict[str, float]] = {
     # 🟢 BULL_MARKUP: Trends persist; buy breakouts and ride EMA hierarchies
     "BULL_MARKUP": {
         "trend": 0.35,              # EMA 8/21, SMA 50/200 alignment
-        "momentum": 0.30,           # MACD velocity, RSI expansion
+        "momentum": 0.25,           # MACD velocity, RSI expansion
         "volume": 0.15,             # Volume surge & delivery confirmation
-        "support_resistance": 0.15, # Breakout levels
+        "support_resistance": 0.10, # Breakout levels
+        "regime": 0.10,             # Benchmark beta & market tailwind
         "news_sentiment": 0.05,     # Vector news confirmation
     },
     # ⚠️ HIGH_VOLATILITY_CHOP: Breakouts fail frequently; mean reversion dominates
     "HIGH_VOLATILITY_CHOP": {
-        "support_resistance": 0.40, # Deep horizontal channel support / value zones
-        "momentum": 0.30,           # Oversold RSI/Stoch bounce indicators
-        "volume": 0.15,             # Liquidity sweep exhaustion volume
         "trend": 0.10,              # Heavily down-weighted (trend-following whipsaws)
+        "momentum": 0.30,           # Oversold RSI/Stoch bounce indicators
+        "support_resistance": 0.25, # Deep horizontal channel support / value zones
+        "volume": 0.15,             # Liquidity sweep exhaustion volume
+        "regime": 0.15,             # Regime sensitivity
         "news_sentiment": 0.05,
     },
     # 🔴 BEAR_MARKDOWN: Capital preservation; counter-trend rallies fail at overhead resistance
     "BEAR_MARKDOWN": {
-        "support_resistance": 0.35, # Overhead resistance supply zones
-        "trend": 0.25,              # Confirming lower-high structural downtrend
-        "momentum": 0.20,           # Oversold exhaustion or bear continuation
+        "support_resistance": 0.25, # Overhead resistance supply zones
+        "trend": 0.15,              # Confirming lower-high structural downtrend
+        "momentum": 0.15,           # Oversold exhaustion or bear continuation
         "volume": 0.10,             # Institutional distribution volume
+        "regime": 0.25,             # Market systemic drag & macro headwinds
         "news_sentiment": 0.10,     # Regulatory risk & downgrade headlines
     },
     # ⚪ LOW_VOLATILITY_CONSOLIDATION: Coiling inside range; watch for volume burst
     "LOW_VOLATILITY_CONSOLIDATION": {
-        "volume": 0.30,             # Quiet accumulation & institutional absorption
+        "volume": 0.25,             # Quiet accumulation & institutional absorption
         "support_resistance": 0.25, # Range boundaries & squeeze channels
-        "trend": 0.25,              # Multi-timeframe trend alignment
+        "trend": 0.20,              # Multi-timeframe trend alignment
         "momentum": 0.15,           # Squeeze expansion signals
+        "regime": 0.10,             # General market context
         "news_sentiment": 0.05,
     },
 }
 
 # Baseline neutral fallback
-DEFAULT_WEIGHTS = {
+DEFAULT_WEIGHTS: dict[str, float] = {
     "trend": 0.25,
     "momentum": 0.25,
-    "support_resistance": 0.20,
+    "support_resistance": 0.15,
     "volume": 0.15,
-    "news_sentiment": 0.15,
+    "regime": 0.10,
+    "news_sentiment": 0.10,
 }
 
 
@@ -74,6 +80,69 @@ def get_regime_adaptive_weights(regime_name: str) -> dict[str, float]:
     return DEFAULT_WEIGHTS
 
 
+def get_forecasting_regime_weights(
+    regime_score: float,
+    catalyst_intensity: float = 0.0
+) -> dict[str, Any]:
+    """
+    Unified Single Source of Truth for Quantitative Confluence Forecasting.
+    Maps quantitative regime_score to the canonical REGIME_WEIGHT_PROFILES,
+    dynamically scaling news/catalyst weighting and returning:
+      - w_trend: float
+      - w_mom: float
+      - w_flow: float (volume + support_resistance combined)
+      - w_regime: float
+      - w_news: float
+      - regime_label: str
+      - base_regime: str
+    """
+    if regime_score > 0.20:
+        base_regime = "BULL_MARKUP"
+        regime_label = "Trending Expansion (Markup)"
+    elif regime_score < -0.20:
+        base_regime = "BEAR_MARKDOWN"
+        regime_label = "Bear Correction (Defensive Markdown)"
+    else:
+        base_regime = "LOW_VOLATILITY_CONSOLIDATION"
+        regime_label = "Consolidation Range (Mean-Reverting)"
+
+    profile = get_regime_adaptive_weights(base_regime)
+
+    # Catalyst dynamic allocation
+    if catalyst_intensity >= 0.25:
+        w_news = min(0.35, 0.18 + 0.25 * (catalyst_intensity - 0.20))
+        w_core = 1.0 - w_news
+    else:
+        w_news = profile.get("news_sentiment", 0.08)
+        w_core = 1.0 - w_news
+
+    # Core weights scaled to remaining core budget
+    core_sum = (
+        profile.get("trend", 0.25) +
+        profile.get("momentum", 0.25) +
+        profile.get("volume", 0.15) +
+        profile.get("support_resistance", 0.15) +
+        profile.get("regime", 0.12)
+    )
+    scale = w_core / (core_sum if core_sum > 0 else 1.0)
+
+    w_trend = profile.get("trend", 0.25) * scale
+    w_mom = profile.get("momentum", 0.25) * scale
+    w_flow = (profile.get("volume", 0.15) + profile.get("support_resistance", 0.15)) * scale
+    w_regime = profile.get("regime", 0.12) * scale
+
+    return {
+        "w_trend": float(w_trend),
+        "w_mom": float(w_mom),
+        "w_flow": float(w_flow),
+        "w_regime": float(w_regime),
+        "w_news": float(w_news),
+        "regime_label": regime_label,
+        "base_regime": base_regime,
+        "raw_profile": profile,
+    }
+
+
 def calculate_adaptive_confluence_score(
     trend_score: float,
     momentum_score: float,
@@ -85,6 +154,7 @@ def calculate_adaptive_confluence_score(
     """
     Calculates the regime-adaptive composite confluence score (0 to 100).
     Surfaces the dynamic weights used and identifies the primary driver.
+    Ensures weights used sum precisely to 1.0 across the 5 input pillars.
     """
     weights = get_regime_adaptive_weights(regime_name)
 
@@ -95,33 +165,56 @@ def calculate_adaptive_confluence_score(
     v_val = volume_score * 100.0 if volume_score <= 1.0 else volume_score
     n_val = news_score * 100.0 if news_score <= 1.0 else news_score
 
+    # Normalize 5 pillars used in mode0 to sum to 1.0
+    mode0_sum = (
+        weights.get("trend", 0.25) +
+        weights.get("momentum", 0.25) +
+        weights.get("support_resistance", 0.15) +
+        weights.get("volume", 0.15) +
+        weights.get("news_sentiment", 0.08)
+    )
+    scale = 1.0 / (mode0_sum if mode0_sum > 0 else 1.0)
+    w_t = weights.get("trend", 0.25) * scale
+    w_m = weights.get("momentum", 0.25) * scale
+    w_sr = weights.get("support_resistance", 0.15) * scale
+    w_v = weights.get("volume", 0.15) * scale
+    w_n = weights.get("news_sentiment", 0.08) * scale
+
     composite_score = round(
-        weights["trend"] * t_val +
-        weights["momentum"] * m_val +
-        weights["support_resistance"] * sr_val +
-        weights["volume"] * v_val +
-        weights["news_sentiment"] * n_val,
+        w_t * t_val +
+        w_m * m_val +
+        w_sr * sr_val +
+        w_v * v_val +
+        w_n * n_val,
         1
     )
 
     # Determine dominant factor by weighted contribution
     contributions = {
-        "Trend Hierarchy": weights["trend"] * t_val,
-        "Momentum Dynamics": weights["momentum"] * m_val,
-        "Support / Resistance": weights["support_resistance"] * sr_val,
-        "Volume Accumulation": weights["volume"] * v_val,
-        "Regulatory & News": weights["news_sentiment"] * n_val,
+        "Trend Hierarchy": w_t * t_val,
+        "Momentum Dynamics": w_m * m_val,
+        "Support / Resistance": w_sr * sr_val,
+        "Volume Accumulation": w_v * v_val,
+        "Regulatory & News": w_n * n_val,
     }
     dominant_factor = max(contributions, key=contributions.get)
 
+    display_weights = {
+        "trend": w_t,
+        "momentum": w_m,
+        "support_resistance": w_sr,
+        "volume": w_v,
+        "news_sentiment": w_n,
+    }
+
     # Create user-friendly badge string showing adapted weights
-    sorted_weights = sorted(weights.items(), key=lambda x: x[1], reverse=True)
+    sorted_weights = sorted(display_weights.items(), key=lambda x: x[1], reverse=True)
     weight_summary = " · ".join([f"{k.capitalize()[:4]}: {int(v*100)}%" for k, v in sorted_weights[:3]])
 
     return {
         "composite_score": composite_score,
         "regime_name": regime_name,
-        "weights_used": weights,
+        "weights_used": display_weights,
         "weight_summary": weight_summary,
         "dominant_factor": dominant_factor,
         "is_adaptive": True,

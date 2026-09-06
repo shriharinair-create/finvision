@@ -41,17 +41,18 @@
 ## 🧠 4. Core Quantitative & AI Intelligence Layers
 
 ### Layer 1: Market Regime Detection (`utils/regime.py`)
-Monitors Nifty 50 (`^NSEI`) 20/50/200 EMA structure and India VIX (`^INDIAVIX`) to classify the market into 4 seasons:
-1. **`BULL_MARKUP`**: Breakouts favored, $1.0\text{x}$ position size, $1.3\text{x}$ ATR profit targets.
-2. **`HIGH_VOLATILITY_CHOP`**: Breakouts fail 65%+; switches to mean-reversion dip buying, $0.6\text{x}$ size, $1.35\text{x}$ stop buffer.
-3. **`BEAR_MARKDOWN`**: Capital preservation mode, longs restricted, $0.4\text{x}$ size cap.
-4. **`QUIET_ACCUMULATION`**: Low VIX ($<13$), Wyckoff float absorption favored.
+Monitors Nifty 50 (`^NSEI`) 20/50/200 EMA structure and India VIX (`^INDIAVIX`) with a strict, documented priority hierarchy:
+1. **`HIGH_VOLATILITY_CHOP`**: VIX $\ge 18.5$ or severe whipsaws; breakouts fail 65%+; switches to mean-reversion dip buying, $0.6\text{x}$ size, $1.35\text{x}$ stop buffer.
+2. **`BULL_MARKUP`**: Clean institutional EMA stack ($Price > EMA20 > EMA50 > SMA200$); breakouts favored, $1.0\text{x}$ size, $1.3\text{x}$ ATR profit targets.
+3. **`QUIET_ACCUMULATION`**: Low VIX ($\le 13.0$) with non-panicked consolidation; Wyckoff float absorption favored, $0.85\text{x}$ size.
+4. **`BEAR_MARKDOWN`**: Structural breakdown below key EMAs; capital preservation mode, longs restricted, $0.4\text{x}$ size cap.
+5. **`NORMAL_BALANCED`**: Balanced mean-reversion consolidation.
 
-### Layer 2: Lopez de Prado Meta-Labeling ("The Veteran Brain" — `utils/meta_labeling.py`)
-A secondary filter evaluating trade setups against multi-dimensional market features:
-* **$P(\text{Win}) < 45\%$**: **⛔ AI VETO (0.0x size)** — Skips setup to prevent drawdowns.
-* **$45\% \le P(\text{Win}) < 62\%$**: **⚠️ HALF SIZE (0.5x size)** — Cautious risk execution.
-* **$P(\text{Win}) \ge 62\%$**: **✅ FULL CONVICTION (1.0x size)** — High-probability alignment.
+### Layer 2: Heuristic Risk Veto Engine & Exposure Scaler (`utils/meta_labeling.py`)
+A deterministic Bayesian prior and secondary risk gate auditing structural risk (exit liquidity traps, high-vol chop penalties, risk:reward hurdles, float absorption):
+* **$P(\text{Follow-through}) < 45\%$**: **⛔ HEURISTIC RISK VETO (0.0x size)** — Skips setup to protect capital.
+* **$45\% \le P(\text{Follow-through}) < 62\%$**: **⚠️ CAUTIOUS RISK GATE (0.5x size)** — Half-size risk buffer.
+* **$P(\text{Follow-through}) \ge 62\%$**: **✅ STRUCTURAL ALIGNMENT (1.0x size)** — Full conviction execution.
 
 ### Layer 3: Automated Trade Post-Mortem Autopsy Engine (`utils/trade_postmortem.py`)
 Conducts automated autopsies on closed paper/live trades:
@@ -59,10 +60,10 @@ Conducts automated autopsies on closed paper/live trades:
 * **`MACRO_REGIME_DRAG`**: Flags systemic Nifty drops ($>1.25\%$) rather than individual setup failure.
 * **`TARGET_BLOWOFF_RUNNER`**: Detects runaway momentum and extends runner targets.
 
-### Layer 4: Veteran Wisdom Fact-Check Lab (`utils/veteran_evaluator.py`)
+### Layer 4: Veteran Wisdom Empirical Backtester & Myth Debunker (`utils/veteran_evaluator.py`)
 * Parses unstructured advice from senior traders, books, and mentors.
 * Runs automated **2-year empirical walk-forward backtests** across NSE historical data.
-* Classifies as **`VALIDATED_ACTIVE`** (Win rate $\ge 55\%$, Profit Factor $\ge 1.35\text{x}$) or **`REJECTED_MYTH`** (discarded folklore).
+* Requires **$N \ge 30$ sample triggers** and **exact binomial p-value $< 0.05$** before tagging as **`VALIDATED_ACTIVE`**; marks under-sampled setups ($N < 30$) honestly as `OBSERVATION_SAMPLE` or `INSUFFICIENT_DATA`.
 
 ### Layer 5: 15-Minute Institutional Candlestick Prediction Standard (`utils/forecasting.py`)
 * Slices trading session into **25 clean 15-minute bars** (09:15 – 15:30 IST) instead of 75 5-minute bars.

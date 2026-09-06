@@ -1,15 +1,21 @@
 """
 finvision/utils/meta_labeling.py
 ================================
-Marcos Lopez de Prado Meta-Labeling Architecture ("The Veteran Brain").
-Acts as the secondary decision model:
-  1. The primary model generates directional setups (Buy Tata Motors at ₹1,000).
-  2. The Meta-Model evaluates the feature state (RSI, Delivery %, Volatility, Regime, VIX, News Score).
-  3. Predicts the probability that the trade will actually succeed based on historical post-mortems.
-  4. Dynamically scales Bet Sizing:
-       - P(Win) < 45% -> 0.0x (VETO / SKIP TRADE)
-       - 45% <= P(Win) < 65% -> 0.5x (CAUTIOUS / HALF SIZE)
-       - P(Win) >= 65% -> 1.0x (FULL CONVICTION)
+Domain-Heuristic Risk Veto & Exposure Scaler (Bayesian Prior Architecture).
+
+Architecture & Quant Note:
+This module operates as a deterministic Domain-Heuristic Risk Veto and Bayesian
+Prior engine. In low signal-to-noise financial data, deterministic structural
+vetoes protect capital against liquidity traps, unfavorable R:R, and systemic regime
+drag without pretending to be a statistical black-box fit.
+
+Functions as the secondary risk gating layer:
+  1. The primary quantitative model generates directional candidate setups.
+  2. The Heuristic Risk Veto Engine audits structural risk (Exit traps, Chop regimes, R:R hurdles, Delivery).
+  3. Calibrates an adjusted follow-through likelihood and scales Bet Sizing:
+       - Likelihood < 45% -> 0.0x (STRUCTURAL VETO / SKIP TRADE)
+       - 45% <= Likelihood < 62% -> 0.5x (CAUTIOUS / HALF SIZE)
+       - Likelihood >= 62% -> 1.0x (FULL ALLOCATION)
 """
 
 from __future__ import annotations
@@ -34,12 +40,13 @@ def evaluate_meta_labeling_filter(
     news_sentiment: float = 0.0
 ) -> dict[str, Any]:
     """
-    Applies the Lopez de Prado Meta-Labeling filter.
+    Applies the Domain-Heuristic Risk Veto and Exposure Filter.
+    (Aliased as evaluate_heuristic_vetoes for quant transparency).
     Returns:
-      - is_approved: bool (True if trade passes the filter)
+      - is_approved: bool (True if trade passes structural filters)
       - bet_sizing_factor: float (0.0, 0.5, or 1.0)
-      - meta_win_probability_pct: float (calibrated likelihood of success)
-      - status_badge: str (e.g. 'HIGH CONVICTION (1.0x)', 'HALF SIZE (0.5x)', 'AI VETO (0.0x)')
+      - meta_win_probability_pct: float (calibrated follow-through likelihood)
+      - status_badge: str (e.g. 'STRUCTURAL ALIGNMENT (1.0x)', 'CAUTIOUS RISK GATE (0.5x)', 'RISK GATE VETO (0.0x)')
       - verdict_explanation: Plain-English explanation
     """
     is_long = "BUY" in action.upper() or "LONG" in action.upper()
@@ -85,9 +92,9 @@ def evaluate_meta_labeling_filter(
         reasons.append(f"Unfavorable Risk:Reward asymmetry ({rr_ratio:.2f}x < 1.25x minimum hurdle).")
     elif rr_ratio >= 2.0:
         boost += 0.08
-        reasons.append(f"Excellent Risk:Reward ratio ({rr_ratio:.2f}x).")
+        reasons.append(f"Favorable Risk:Reward asymmetry ({rr_ratio:.2f}x >= 2.0x target).")
 
-    # Final Calibrated Meta Probability
+    # Final Calibrated Follow-through Likelihood
     calibrated_prob = float(np.clip(base_prob + boost - penalty, 0.15, 0.92))
     meta_win_prob_pct = round(calibrated_prob * 100.0, 1)
 
@@ -95,28 +102,28 @@ def evaluate_meta_labeling_filter(
     if exit_trap or meta_win_prob_pct < 45.0 or (is_long and regime_code == "BEAR_MARKDOWN" and meta_win_prob_pct < 55.0):
         is_approved = False
         sizing_factor = 0.0
-        badge = "⛔ AI VETO (SKIP SETUP)"
+        badge = "? HEURISTIC RISK VETO (0.0x)"
         badge_color = "#FF5252"
         explanation = (
-            f"Meta-Model VETO: Expected win probability is only {meta_win_prob_pct}%. "
-            f"The AI skips this trade to protect capital. " + (" ".join(reasons))
+            f"Risk Gate VETO: Calibrated follow-through likelihood is {meta_win_prob_pct}%. "
+            f"Structural risk rules veto this setup to protect capital. " + (" ".join(reasons))
         )
     elif meta_win_prob_pct < 62.0:
         is_approved = True
         sizing_factor = 0.5
-        badge = "⚠️ HALF SIZE (0.5x)"
+        badge = "?? CAUTIOUS RISK GATE (0.5x)"
         badge_color = "#FFB300"
         explanation = (
-            f"Meta-Model Caution: Moderate probability ({meta_win_prob_pct}%). "
+            f"Risk Gate Caution: Moderate follow-through likelihood ({meta_win_prob_pct}%). "
             f"Position size trimmed to 50% for risk buffer. " + (" ".join(reasons))
         )
     else:
         is_approved = True
         sizing_factor = 1.0
-        badge = "✅ FULL CONVICTION (1.0x)"
+        badge = "? STRUCTURAL ALIGNMENT (1.0x)"
         badge_color = "#00E676"
         explanation = (
-            f"Meta-Model Approved: Strong alignment ({meta_win_prob_pct}% win probability). "
+            f"Risk Gate Approved: Strong structural alignment ({meta_win_prob_pct}% follow-through likelihood). "
             f"Full budget sizing allocated. " + (" ".join(reasons))
         )
 
@@ -129,3 +136,7 @@ def evaluate_meta_labeling_filter(
         "verdict_explanation": explanation,
         "reasons": reasons
     }
+
+
+# Transparent quant aliases
+evaluate_heuristic_vetoes = evaluate_meta_labeling_filter

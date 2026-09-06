@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import datetime
 from typing import Any, Dict, List
+from pathlib import Path
 import pandas as pd
 import streamlit as st
 
@@ -631,6 +632,34 @@ def render_mode6():
     with tab_academy:
         st.markdown("### 🎓 FinVision Institutional Trading & Investing Academy")
         st.caption("Bite-sized institutional trading wisdom to turn zero-knowledge beginners into disciplined, consistently profitable operators.")
+
+        # Beginner's Field Manual Interactive Reader (Clean Community Edition)
+        guide_file = Path(__file__).parent.parent / "FINVISION_COMMUNITY_STARTUP_GUIDE.md"
+        pdf_file = Path(__file__).parent.parent / "FINVISION_COMMUNITY_STARTUP_GUIDE.pdf"
+        if guide_file.exists():
+            with st.expander("📘 Open FinVision v3.0 Beginner's Field Manual (Full Guide)", expanded=False):
+                c_dl1, c_dl2 = st.columns(2)
+                with c_dl1:
+                    if pdf_file.exists():
+                        with open(pdf_file, "rb") as pf:
+                            st.download_button(
+                                label="📥 Download Printable PDF Guide (.pdf)",
+                                data=pf.read(),
+                                file_name="FINVISION_BEGINNERS_FIELD_MANUAL.pdf",
+                                mime="application/pdf",
+                                key="btn_download_guide_pdf"
+                            )
+                with c_dl2:
+                    with open(guide_file, "r", encoding="utf-8") as f:
+                        guide_md = f.read()
+                    st.download_button(
+                        label="📥 Download Markdown Guide (.md)",
+                        data=guide_md,
+                        file_name="FINVISION_BEGINNERS_FIELD_MANUAL.md",
+                        mime="text/markdown",
+                        key="btn_download_guide_md"
+                    )
+                st.markdown(guide_md)
 
         for lesson in ACADEMY_LESSONS:
             with st.container():

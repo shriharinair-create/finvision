@@ -210,6 +210,24 @@ def fetch_intraday_5m(ticker: str) -> pd.DataFrame:
     return _safe_yf_download(ticker, period="2d", interval="5m")
 
 
+@st.cache_data(ttl=180, show_spinner=False)
+def fetch_timeframe_history(ticker: str, timeframe: str = "1D") -> pd.DataFrame:
+    """
+    Fetches historical candles for various timeframes (5m, 15m, 1h, 1d, 1w).
+    """
+    tf = str(timeframe).upper().strip()
+    if tf in ("5M", "5 MIN", "5-MIN"):
+        return _safe_yf_download(ticker, period="5d", interval="5m")
+    elif tf in ("15M", "15 MIN", "15-MIN"):
+        return _safe_yf_download(ticker, period="1mo", interval="15m")
+    elif tf in ("1H", "60M", "1 HOUR"):
+        return _safe_yf_download(ticker, period="3mo", interval="60m")
+    elif tf in ("1W", "1WK", "1 WEEK"):
+        return _safe_yf_download(ticker, period="5y", interval="1wk")
+    else:  # default 1D
+        return _safe_yf_download(ticker, period="1y", interval="1d")
+
+
 @st.cache_data(ttl=3_600, show_spinner=False)
 def fetch_ticker_info(ticker: str) -> dict:
     return _safe_ticker_info(ticker)
