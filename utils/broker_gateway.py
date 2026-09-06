@@ -18,6 +18,7 @@ from __future__ import annotations
 import ipaddress
 import json
 import logging
+import socket
 from typing import Dict, Any, Optional
 import urllib.request
 import urllib.error
@@ -45,10 +46,27 @@ ALLOWED_BROKER_DOMAINS = [
 ]
 
 
-def validate_broker_endpoint(webhook_url: str) -> tuple[bool, str]:
+def _resolve_and_check_ips(hostname: str) -> tuple[bool, str]:
+    """Resolves DNS and verifies no returned IP is loopback, private, link-local, or multicast (H3 Fix)."""
+    try:
+        infos = socket.getaddrinfo(hostname, None)
+    except socket.gaierror as e:
+        return False, f"Could not resolve hostname '{hostname}': {e}"
+    for family, _, _, _, sockaddr in infos:
+        ip_str = sockaddr[0]
+        try:
+            ip = ipaddress.ip_address(ip_str)
+            if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast:
+                return False, f"Hostname '{hostname}' resolves to a private/internal address ({ip_str}) — blocked (SSRF guard)."
+        except ValueError:
+            continue
+    return True, "OK"
+
+
+def validate_broker_endpoint(webhook_url: str, broker: str = "", allow_custom_webhook: bool = False) -> tuple[bool, str]:
     """
     Validates the destination endpoint for live broker routing.
-    Protects against SSRF, internal cloud metadata exfiltration, and insecure protocols.
+    Protects against SSRF, internal cloud metadata exfiltration, DNS rebinding, and untrusted domains (H2 & H3).
     """
     if not webhook_url or not isinstance(webhook_url, str):
         return False, "Webhook URL cannot be empty."
@@ -62,17 +80,30 @@ def validate_broker_endpoint(webhook_url: str) -> tuple[bool, str]:
         return False, "Invalid endpoint hostname."
 
     # 1. Block loopback, localhost, and cloud metadata endpoints
-    if hostname in ("localhost", "127.0.0.1", "::1", "metadata.google.internal"):
+    if hostname in ("localhost", "127.0.0.1", "::1", "metadata.google.internal", "169.254.169.254"):
         return False, "Localhost and cloud-metadata addresses are strictly prohibited (SSRF Guard)."
 
     # 2. Check if IP address is provided directly
     try:
         ip = ipaddress.ip_address(hostname)
-        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast:
             return False, f"Private or link-local IP address '{hostname}' is prohibited."
     except ValueError:
         # Not a raw IP address; hostname is a domain name
         pass
+
+    # 3. DNS resolution check against DNS rebinding to internal IPs (H3)
+    ok_dns, dns_msg = _resolve_and_check_ips(hostname)
+    if not ok_dns:
+        return False, dns_msg
+
+    # 4. Enforce trusted broker domain allowlist unless allow_custom_webhook is explicitly granted (H2)
+    is_known_broker = any(hostname == d or hostname.endswith("." + d) for d in ALLOWED_BROKER_DOMAINS)
+    if not is_known_broker and not allow_custom_webhook:
+        return False, (
+            f"'{hostname}' is not a recognized official broker domain. If routing through "
+            f"a custom webhook/automation bridge (n8n, Zapier), enable 'Allow custom webhook' first."
+        )
 
     return True, "Valid broker endpoint."
 
@@ -172,6 +203,7 @@ def dispatch_broker_order(
     access_token: Optional[str] = None,
     webhook_url: Optional[str] = None,
     dry_run: bool = True,
+    allow_custom_webhook: bool = False,
 ) -> Dict[str, Any]:
     """
     Dispatches order to live broker API or webhook with guaranteed idempotency.
@@ -192,8 +224,8 @@ def dispatch_broker_order(
             "idempotency_key": idempotency_key,
         }
 
-    # SSRF & Endpoint Validation Guard
-    is_valid_url, url_err = validate_broker_endpoint(webhook_url)
+    # SSRF & Endpoint Validation Guard (H2 & H3)
+    is_valid_url, url_err = validate_broker_endpoint(webhook_url, broker=broker, allow_custom_webhook=allow_custom_webhook)
     if not is_valid_url:
         logger.error(f"Broker dispatch blocked by security guard: {url_err}")
         return {

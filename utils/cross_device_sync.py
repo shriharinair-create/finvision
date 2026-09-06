@@ -419,6 +419,7 @@ def acquire_execution_lease(node_id: str, ttl_seconds: int = 90) -> tuple[bool, 
     """
     Attempts to acquire or extend the single-writer execution lease.
     Guarantees that only ONE node (PC or Cloud) can dispatch live orders during any cycle.
+    Uses BEGIN IMMEDIATE and atomic update condition checking rowcount to prevent TOCTOU races.
     Returns:
         (acquired: bool, message: str, lease_token: str)
     """
@@ -430,60 +431,94 @@ def acquire_execution_lease(node_id: str, ttl_seconds: int = 90) -> tuple[bool, 
     expires_iso = expires_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
     new_token = str(uuid.uuid4())
 
-    with get_connection() as conn:
+    conn = get_connection()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
         cur = conn.cursor()
         cur.execute("SELECT lease_holder, lease_token, expires_at FROM execution_lease WHERE id = 1")
         row = cur.fetchone()
 
         if not row:
             cur.execute("""
-                INSERT INTO execution_lease (id, lease_holder, lease_token, acquired_at, expires_at)
+                INSERT OR IGNORE INTO execution_lease (id, lease_holder, lease_token, acquired_at, expires_at)
                 VALUES (1, ?, ?, ?, ?)
             """, (node_id, new_token, now_iso, expires_iso))
-            conn.commit()
-            return True, f"Execution lease acquired by {node_id}.", new_token
+            if cur.rowcount > 0:
+                conn.commit()
+                return True, f"Execution lease acquired by {node_id}.", new_token
+            cur.execute("SELECT lease_holder, lease_token, expires_at FROM execution_lease WHERE id = 1")
+            row = cur.fetchone()
 
-        current_holder, current_token, current_expires = row[0], row[1], row[2]
+        if row:
+            current_holder, current_token, current_expires = row[0], row[1], row[2]
+            try:
+                exp_dt = datetime.datetime.fromisoformat(current_expires.replace("Z", "+00:00"))
+            except Exception:
+                exp_dt = now_dt - datetime.timedelta(seconds=1)
+
+            is_expired = now_dt > exp_dt
+
+            if is_expired:
+                cur.execute("""
+                    UPDATE execution_lease
+                    SET lease_holder = ?, lease_token = ?, acquired_at = ?, expires_at = ?
+                    WHERE id = 1 AND (expires_at < ? OR expires_at = ?)
+                """, (node_id, new_token, now_iso, expires_iso, now_iso, current_expires))
+                if cur.rowcount > 0:
+                    conn.commit()
+                    return True, f"Expired lease superseded by {node_id}.", new_token
+                else:
+                    conn.rollback()
+                    return False, "Lease race condition: lease was updated by another process.", ""
+            elif current_holder == node_id:
+                cur.execute("""
+                    UPDATE execution_lease
+                    SET lease_token = ?, expires_at = ?
+                    WHERE id = 1 AND lease_holder = ?
+                """, (new_token, expires_iso, node_id))
+                if cur.rowcount > 0:
+                    conn.commit()
+                    return True, f"Execution lease renewed for {node_id}.", new_token
+                else:
+                    conn.rollback()
+                    return False, "Lease renewal race condition.", ""
+            else:
+                diff_secs = max(0.0, (exp_dt - now_dt).total_seconds())
+                conn.rollback()
+                return False, f"Lease actively held by {current_holder} ({diff_secs:.1f}s remaining).", current_token
+        conn.commit()
+        return False, "Unable to acquire lease.", ""
+    except Exception as e:
         try:
-            exp_dt = datetime.datetime.fromisoformat(current_expires.replace("Z", "+00:00"))
+            conn.rollback()
         except Exception:
-            exp_dt = now_dt - datetime.timedelta(seconds=1)
-
-        is_expired = now_dt > exp_dt
-
-        if is_expired:
-            cur.execute("""
-                UPDATE execution_lease
-                SET lease_holder = ?, lease_token = ?, acquired_at = ?, expires_at = ?
-                WHERE id = 1
-            """, (node_id, new_token, now_iso, expires_iso))
-            conn.commit()
-            return True, f"Expired lease superseded by {node_id}.", new_token
-        elif current_holder == node_id:
-            cur.execute("""
-                UPDATE execution_lease
-                SET lease_token = ?, expires_at = ?
-                WHERE id = 1
-            """, (new_token, expires_iso))
-            conn.commit()
-            return True, f"Execution lease renewed for {node_id}.", new_token
-        else:
-            diff_secs = max(0.0, (exp_dt - now_dt).total_seconds())
-            return False, f"Lease actively held by {current_holder} ({diff_secs:.1f}s remaining).", current_token
+            pass
+        logger.error(f"Error acquiring execution lease: {e}")
+        return False, f"Error acquiring lease: {e}", ""
+    finally:
+        conn.close()
 
 
 def release_execution_lease(node_id: str, lease_token: str) -> bool:
     """Releases the execution lease gracefully when cycle finishes."""
     _ensure_lease_table()
-    with get_connection() as conn:
+    conn = get_connection()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
         cur = conn.cursor()
-        cur.execute("SELECT lease_holder, lease_token FROM execution_lease WHERE id = 1")
-        row = cur.fetchone()
-        if row and row[0] == node_id and row[1] == lease_token:
-            cur.execute("DELETE FROM execution_lease WHERE id = 1")
-            conn.commit()
-            return True
-    return False
+        cur.execute("DELETE FROM execution_lease WHERE id = 1 AND lease_holder = ? AND lease_token = ?", (node_id, lease_token))
+        deleted = cur.rowcount > 0
+        conn.commit()
+        return deleted
+    except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        logger.debug(f"Error releasing lease: {e}")
+        return False
+    finally:
+        conn.close()
 
 
 def get_active_lease() -> dict[str, Any]:

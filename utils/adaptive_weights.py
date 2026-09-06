@@ -46,13 +46,39 @@ STATIC_REGIME_WEIGHT_PROFILES: dict[str, dict[str, float]] = {
         "regime": 0.25,             # Market systemic drag & macro headwinds
         "news_sentiment": 0.10,     # Regulatory risk & downgrade headlines
     },
-    # ⚪ LOW_VOLATILITY_CONSOLIDATION: Coiling inside range; watch for volume burst
-    "LOW_VOLATILITY_CONSOLIDATION": {
+    # ⚪ QUIET_ACCUMULATION / LOW_VOLATILITY_CONSOLIDATION: Coiling inside range; watch for volume burst
+    "QUIET_ACCUMULATION": {
         "volume": 0.25,             # Quiet accumulation & institutional absorption
         "support_resistance": 0.25, # Range boundaries & squeeze channels
         "trend": 0.20,              # Multi-timeframe trend alignment
         "momentum": 0.15,           # Squeeze expansion signals
         "regime": 0.10,             # General market context
+        "news_sentiment": 0.05,
+    },
+    "LOW_VOLATILITY_CONSOLIDATION": {
+        "volume": 0.25,
+        "support_resistance": 0.25,
+        "trend": 0.20,
+        "momentum": 0.15,
+        "regime": 0.10,
+        "news_sentiment": 0.05,
+    },
+    # 🔵 NORMAL_BALANCED: Balanced consolidation around key EMAs
+    "NORMAL_BALANCED": {
+        "trend": 0.25,
+        "momentum": 0.25,
+        "support_resistance": 0.20,
+        "volume": 0.15,
+        "regime": 0.10,
+        "news_sentiment": 0.05,
+    },
+    # 🛡️ DATA_UNAVAILABLE: Defensive capital preservation weights
+    "DATA_UNAVAILABLE": {
+        "trend": 0.10,
+        "momentum": 0.10,
+        "support_resistance": 0.35,
+        "volume": 0.15,
+        "regime": 0.25,
         "news_sentiment": 0.05,
     },
 }
@@ -76,6 +102,8 @@ def get_regime_adaptive_weights(regime_name: str) -> dict[str, float]:
     Ensures weights always sum precisely to 1.0 (100%).
     """
     clean_regime = regime_name.upper().replace(" ", "_")
+    if clean_regime in REGIME_WEIGHT_PROFILES:
+        return REGIME_WEIGHT_PROFILES[clean_regime]
     for key, weights in REGIME_WEIGHT_PROFILES.items():
         if key in clean_regime:
             return weights

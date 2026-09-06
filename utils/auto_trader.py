@@ -55,6 +55,7 @@ from utils.regime import detect_indian_market_regime
 from utils.meta_labeling import evaluate_meta_labeling_filter
 from utils.bse_corporate import check_corporate_event_risk
 from utils.trade_postmortem import diagnose_trade_postmortem
+from utils.indicators import compute_atr
 from utils.ml_ensemble import retrain_ensemble_from_trade_journal, compute_ml_ensemble_consensus
 from utils.broker_gateway import build_broker_order_payload, dispatch_broker_order, SUPPORTED_BROKERS
 from utils.fundamental_wealth import BLUE_CHIP_COMPOUNDERS, analyze_stock_fundamentals, DEFAULT_FUNDAMENTALS
@@ -297,6 +298,19 @@ def scan_multi_horizon_candidates(
     """
     candidates = []
 
+    # Detect Indian Market Regime and scale parameters accordingly (Finding C2)
+    regime = detect_indian_market_regime()
+    regime_risk_mult = float(regime.get("max_risk_multiplier", 1.0))
+    regime_stop_mult = float(regime.get("stop_multiplier", 1.0))
+    regime_target_mult = float(regime.get("target_multiplier", 1.0))
+
+    if regime_risk_mult <= 0.0:
+        logger.warning(
+            f"Auto-Trader scan aborted: regime '{regime.get('regime_code')}' enforces max_risk_multiplier=0.0 "
+            "(market data unavailable or blind mode capital preservation active)."
+        )
+        return []
+
     # Format custom tickers if provided
     formatted_custom = []
     if custom_tickers:
@@ -317,7 +331,6 @@ def scan_multi_horizon_candidates(
         if day_pool:
             try:
                 hist_data = yf.download(day_pool, period="10d", interval="15m", progress=False)
-                regime = detect_indian_market_regime()
 
                 for tick in day_pool:
                     try:
@@ -346,18 +359,17 @@ def scan_multi_horizon_candidates(
                             logger.debug(f"Data sanity check failed for {tick}: {s_reason}")
                             continue
 
-                        tr = max(high - low, abs(high - c_prev), abs(low - c_prev))
-                        atr = float(df_t["High"].tail(14).max() - df_t["Low"].tail(14).min()) / 5.0
-                        atr = max(atr, close * 0.0075)
+                        # Canonical Wilder ATR with institutional minimum floor (Finding A1)
+                        atr = compute_atr(df_t, period=14, min_pct_of_price=0.0075)
 
                         # Adaptive stop buffer multiplier learned from past autopsies
                         buf_record = get_stock_adaptive_buffer(tick)
                         stop_mult = buf_record.get("current_stop_multiplier", 1.0) if buf_record else 1.0
 
-                        # Calculate levels
+                        # Calculate levels (scaled by regime stop and target multipliers - Finding C2)
                         entry = round(close, 2)
-                        stop_loss = round(entry - (atr * 1.25 * stop_mult), 2)
-                        target1 = round(entry + (atr * 2.0), 2)
+                        stop_loss = round(entry - (atr * 1.25 * stop_mult * regime_stop_mult), 2)
+                        target1 = round(entry + (atr * 2.0 * regime_target_mult), 2)
 
                         # 1. Compute dynamic 14-period RSI from intraday candle history
                         close_series = df_t["Close"].astype(float)
@@ -409,7 +421,7 @@ def scan_multi_horizon_candidates(
                         if is_conviction:
                             sizing = compute_position_size(
                                 total_capital=budget,
-                                risk_pct=risk_pct * float(meta_eval.get("bet_sizing_factor", 1.0)),
+                                risk_pct=risk_pct * float(meta_eval.get("bet_sizing_factor", 1.0)) * regime_risk_mult,
                                 entry_price=entry,
                                 stop_price=stop_loss,
                             )
@@ -424,14 +436,16 @@ def scan_multi_horizon_candidates(
                                 "trade_type": "BUY_INTRADAY",
                                 "entry_price": entry,
                                 "target_price": target1,
-                                    "stop_loss_price": stop_loss,
-                                    "shares": shares_count,
-                                    "position_value": sizing["position_value"],
-                                    "cash_at_risk": sizing["cash_at_risk"],
-                                    "conviction_pct": round(win_prob, 1),
-                                    "stop_multiplier": stop_mult,
-                                    "notes": f"Auto-Trader ⚡ Day Setup | Meta P(Win): {win_prob:.1f}% | ML: {ml_res.get('badge', 'BULL')}",
-                                })
+                                "stop_loss_price": stop_loss,
+                                "shares": shares_count,
+                                "position_value": sizing["position_value"],
+                                "cash_at_risk": sizing["cash_at_risk"],
+                                "conviction_pct": round(win_prob, 1),
+                                "stop_multiplier": stop_mult,
+                                "regime_at_entry": regime.get("regime_code", "NORMAL"),
+                                "predicted_win_prob": round(win_prob, 1),
+                                "notes": f"Auto-Trader ⚡ Day Setup | Meta P(Win): {win_prob:.1f}% | ML: {ml_res.get('badge', 'BULL')}",
+                            })
                     except Exception as e:
                         logger.debug(f"Day scan failed for {tick}: {e}")
             except Exception as exc:
@@ -473,19 +487,19 @@ def scan_multi_horizon_candidates(
 
                 # Healthy trend pull-back setup (price above 50 EMA, near 20 EMA)
                 if c_now >= ema50 * 0.98:
-                    atr_daily = float((df_daily["High"].tail(14).max() - df_daily["Low"].tail(14).min()) / 7.0)
-                    atr_daily = max(atr_daily, c_now * 0.015)
+                    # Canonical Wilder ATR for swing (Finding A1)
+                    atr_daily = compute_atr(df_daily, period=14, min_pct_of_price=0.015)
 
                     buf_record = get_stock_adaptive_buffer(tick)
                     stop_mult = buf_record.get("current_stop_multiplier", 1.0) if buf_record else 1.0
 
                     entry = round(c_now, 2)
-                    stop_loss = round(entry - (atr_daily * 1.5 * stop_mult), 2)
-                    target = round(entry + (atr_daily * 2.8), 2)
+                    stop_loss = round(entry - (atr_daily * 1.5 * stop_mult * regime_stop_mult), 2)
+                    target = round(entry + (atr_daily * 2.8 * regime_target_mult), 2)
 
                     sizing = compute_position_size(
                         total_capital=budget,
-                        risk_pct=risk_pct * 1.25,  # Modest swing buffer
+                        risk_pct=risk_pct * 1.25 * regime_risk_mult,  # Modest swing buffer scaled by regime
                         entry_price=entry,
                         stop_price=stop_loss,
                         max_position_pct_of_capital=0.20,
@@ -504,6 +518,8 @@ def scan_multi_horizon_candidates(
                             "cash_at_risk": sizing["cash_at_risk"],
                             "conviction_pct": 68.5,
                             "stop_multiplier": stop_mult,
+                            "regime_at_entry": regime.get("regime_code", "NORMAL"),
+                            "predicted_win_prob": 68.5,
                             "notes": f"Auto-Trader 🔭 Swing Setup | 20/50 EMA Trend Alignment | Corporate Event Clear",
                         })
             except Exception as e:
@@ -523,8 +539,8 @@ def scan_multi_horizon_candidates(
                     t3y = float(fund.get("target_3y", p * 1.5))
                     sl = round(p * 0.85, 2)  # 15% structural stop
 
-                    # Long-term investment tranche: max 15% of budget
-                    max_alloc = budget * 0.15
+                    # Long-term investment tranche: max 15% of budget scaled by regime
+                    max_alloc = budget * 0.15 * regime_risk_mult
                     shares = max(1, int(max_alloc / p))
                     pos_val = round(p * shares, 2)
 
@@ -540,6 +556,8 @@ def scan_multi_horizon_candidates(
                         "cash_at_risk": round((p - sl) * shares, 2),
                         "conviction_pct": round(float(fund.get("fundamental_quality_score", 80)), 1),
                         "stop_multiplier": 1.0,
+                        "regime_at_entry": regime.get("regime_code", "NORMAL"),
+                        "predicted_win_prob": round(float(fund.get("fundamental_quality_score", 80)), 1),
                         "notes": f"Auto-Trader 🌱 Long-Term Wide-Moat | ROE: {fund.get('roe_pct')}% | 3Y Target: ₹{t3y:,.0f}",
                     })
             except Exception as e:
@@ -645,9 +663,36 @@ def monitor_and_resolve_open_trades(dry_run: bool = True) -> list[dict[str, Any]
             # 1. Close the trade in SQLite journal
             close_paper_trade(tid, exit_price, reason)
 
-            # 2. Run Self-Learning Autopsy & Attribution
+            # 2. Run Self-Learning Autopsy & Attribution (Finding C1)
             try:
-                # Post-mortem diagnosis
+                # Fetch history and benchmark return for accurate postmortem attribution
+                df_history = None
+                nifty_ret = 0.0
+                try:
+                    interval = "15m" if horizon == "DAY_TRADE" else "1d"
+                    period = "5d" if horizon == "DAY_TRADE" else "1mo"
+                    df_history = yf.download(tick, period=period, interval=interval, progress=False)
+                    if isinstance(df_history.columns, pd.MultiIndex):
+                        df_history.columns = [c[0] for c in df_history.columns]
+                except Exception as ex_df:
+                    logger.debug(f"Postmortem bar fetch failed for {tick}: {ex_df}")
+
+                try:
+                    n_interval = "15m" if horizon == "DAY_TRADE" else "1d"
+                    n_period = "5d" if horizon == "DAY_TRADE" else "1mo"
+                    df_nifty = yf.download("^NSEI", period=n_period, interval=n_interval, progress=False)
+                    if isinstance(df_nifty.columns, pd.MultiIndex):
+                        df_nifty.columns = [c[0] for c in df_nifty.columns]
+                    if not df_nifty.empty and "Close" in df_nifty:
+                        n_c = df_nifty["Close"].dropna()
+                        if len(n_c) >= 2:
+                            nifty_ret = float((n_c.iloc[-1] - n_c.iloc[0]) / n_c.iloc[0])
+                except Exception as ex_nifty:
+                    logger.debug(f"Postmortem Nifty fetch failed: {ex_nifty}")
+
+                regime_entry = trade.get("regime_at_entry") or "NORMAL"
+
+                # Post-mortem diagnosis with full bar history, market drag, and entry regime
                 pm = diagnose_trade_postmortem(
                     ticker=tick,
                     trade_type=trade["trade_type"],
@@ -656,14 +701,17 @@ def monitor_and_resolve_open_trades(dry_run: bool = True) -> list[dict[str, Any]
                     stop_loss_price=stop,
                     exit_price=exit_price,
                     status=reason,
+                    df_history=df_history,
+                    nifty_return_during_trade=nifty_ret,
+                    regime_at_entry=regime_entry,
                 )
                 pm["trade_id"] = tid
                 log_trade_postmortem(pm)
 
-                # ML Meta-model retrain feedback (Sample Gating: N >= 50 to prevent overfitting)
+                # ML Meta-model retrain feedback (Sample Gating: N >= 100 to prevent overfitting - Finding C5)
                 retrain_res = {
                     "status": "DEFERRED_SAMPLE_GATED",
-                    "message": "Sample size < 50 minimum.",
+                    "message": "Sample size < 100 minimum.",
                     "sample_count": 0,
                     "empirical_win_rate": 0.0,
                 }
@@ -673,12 +721,12 @@ def monitor_and_resolve_open_trades(dry_run: bool = True) -> list[dict[str, Any]
                         cur.execute("SELECT count(*) FROM paper_trades WHERE status != 'OPEN'")
                         closed_sample_count = cur.fetchone()[0]
                     retrain_res["sample_count"] = closed_sample_count
-                    if closed_sample_count >= 50:
+                    if closed_sample_count >= 100:
                         retrain_res = retrain_ensemble_from_trade_journal()
                         logger.info(f"Retrained ML ensemble on {closed_sample_count} completed trades.")
                     else:
                         retrain_res["status"] = "DEFERRED_SAMPLE_GATED"
-                        retrain_res["message"] = f"ML retrain deferred: sample size ({closed_sample_count}) < 50 minimum."
+                        retrain_res["message"] = f"ML retrain deferred: sample size ({closed_sample_count}) < 100 minimum."
                         logger.info(retrain_res["message"])
                 except Exception as ex_rt:
                     logger.debug(f"ML retrain guard error: {ex_rt}")
@@ -784,15 +832,22 @@ def run_auto_trade_cycle(
         open_count = len(active_now)
         slots_available = max(0, max_positions - open_count) if allow_entries else 0
 
+        # Calculate deployed capital across currently active trades (Finding C3)
+        deployed_capital = sum(float(t.get("entry_price", 0.0)) * int(t.get("shares", 0)) for t in active_now)
+        available_budget = max(0.0, float(user_budget) - deployed_capital)
+
         if not allow_entries:
             logger.warning(f"Auto-Trader new entries suppressed: {cb_status.get('shield_status')}")
+        elif available_budget <= 0.0:
+            logger.info(f"Auto-Trader capital fully deployed (₹{deployed_capital:,.0f} / ₹{user_budget:,.0f}). No budget for new entries.")
+            slots_available = 0
 
-        if slots_available > 0:
+        if slots_available > 0 and available_budget > 0.0:
             current_tickers = [t["ticker"] for t in active_now]
             raw_wl = cfg.get("custom_watchlist", "")
             custom_list = [x.strip() for x in raw_wl.split(",") if x.strip()] if raw_wl else None
             candidates = scan_multi_horizon_candidates(
-                budget=user_budget,
+                budget=available_budget,
                 risk_pct=risk_pct,
                 enabled_horizons=enabled_horizons,
                 current_open_tickers=current_tickers,
@@ -828,10 +883,11 @@ def run_auto_trade_cycle(
 
             # ── 🧪 Synthetic Sector Pods Multi-Cohort Forward Cycle ──────────
             try:
-                run_cohort_simulation_cycle(live_quotes=quotes)
+                run_cohort_simulation_cycle(live_quotes=None)
             except Exception as e_cohort:
                 logger.debug(f"Synthetic cohort simulation notice: {e_cohort}")
 
+            running_budget = available_budget
             for cand in candidates[:slots_available]:
                 tick = cand["ticker"]
                 h_name = cand["horizon"]
@@ -841,6 +897,16 @@ def run_auto_trade_cycle(
                 sl_p = cand["stop_loss_price"]
                 shares = cand["shares"]
                 notes = cand["notes"]
+
+                # Ensure candidate does not exceed remaining running budget (Finding C3)
+                cand_cost = entry_p * shares
+                if cand_cost > running_budget:
+                    affordable_shares = int(running_budget / entry_p) if entry_p > 0 else 0
+                    if affordable_shares <= 0:
+                        logger.debug(f"Skipping {tick}: required capital (₹{cand_cost:,.0f}) exceeds remaining budget (₹{running_budget:,.0f}).")
+                        continue
+                    shares = affordable_shares
+                    cand_cost = entry_p * shares
 
                 # Route Execution
                 if exec_mode == "LIVE_BROKER" and wb_url:
@@ -860,11 +926,21 @@ def run_auto_trade_cycle(
                         webhook_url=wb_url,
                         dry_run=False,
                     )
+                    # Block phantom entries if broker dispatch failed (Finding C4)
+                    if dispatch_res.get("status") not in ("SUCCESS", "SIMULATED_SUCCESS"):
+                        logger.error(
+                            f"Live broker order dispatch failed for {tick}: {dispatch_res.get('message')} "
+                            f"(status: {dispatch_res.get('status')}). Trade NOT entered in journal."
+                        )
+                        continue
                     log_notes = f"{notes} | Dispatched to {broker}: {dispatch_res.get('status')}"
                 else:
                     log_notes = f"{notes} | Safe Simulation Mode"
 
-                # Record in paper_trades journal with is_auto_trade=1
+                # Deduct capital from running budget
+                running_budget = max(0.0, running_budget - cand_cost)
+
+                # Record in paper_trades journal with is_auto_trade=1, entry regime, and predicted win prob
                 tid = log_paper_trade(
                     ticker=tick,
                     trade_type=t_type,
@@ -876,6 +952,9 @@ def run_auto_trade_cycle(
                     is_auto_trade=1,
                     execution_mode=exec_mode,
                     horizon=h_name,
+                    regime_at_entry=cand.get("regime_at_entry", "NORMAL"),
+                    predicted_win_prob=cand.get("predicted_win_prob", 0.0),
+                    source="AUTO_TRADER",
                 )
 
                 new_entries.append({

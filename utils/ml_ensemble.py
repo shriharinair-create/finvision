@@ -236,25 +236,27 @@ def compute_ml_ensemble_consensus(
         }
 
 
-def retrain_ensemble_from_trade_journal(db_path: str = "./finvision_data.db") -> dict[str, Any]:
+def retrain_ensemble_from_trade_journal(db_path: Optional[str] = None) -> dict[str, Any]:
     """
     Continuous ML Retraining Engine:
-    Reads historical closed paper and live trades from SQLite, audits outcomes (WON/LOST),
-    and recalibrates the meta-model decision threshold to continuously maximize empirical edge.
+    Reads historical closed paper and live trades from SQLite in chronological order, audits outcomes (WON/LOST),
+    and recalibrates the meta-model decision threshold against out-of-sample expectancy on holdout trades.
     """
     import sqlite3
     import os
+    from utils.market_store import DB_PATH, get_connection
 
-    if not os.path.exists(db_path):
+    effective_db = db_path or DB_PATH
+    if not os.path.exists(effective_db):
         return {
             "status": "NO_DATABASE",
-            "message": "Trade journal database does not exist yet.",
+            "message": f"Trade journal database does not exist yet at {effective_db}.",
             "sample_count": 0,
             "empirical_win_rate": 0.0,
         }
 
     try:
-        conn = sqlite3.connect(db_path)
+        conn = get_connection()
         cursor = conn.cursor()
         cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='paper_trades'")
         if not cursor.fetchone():
@@ -267,9 +269,10 @@ def retrain_ensemble_from_trade_journal(db_path: str = "./finvision_data.db") ->
             }
 
         cursor.execute("""
-            SELECT ticker, trade_type, entry_price, target_price, stop_loss_price, status, pnl_amount
+            SELECT ticker, trade_type, entry_price, target_price, stop_loss_price, status, pnl_amount, predicted_win_prob
             FROM paper_trades
-            WHERE status IN ('CLOSED_PROFIT', 'CLOSED_LOSS', 'WON', 'LOST', 'TARGET_HIT', 'STOP_HIT', 'CLOSED_MANUAL')
+            WHERE status IN ('CLOSED_PROFIT', 'CLOSED_LOSS', 'WON', 'LOST', 'TARGET_HIT', 'STOP_HIT', 'CLOSED_MANUAL', 'INTRADAY_TIME_EXIT')
+            ORDER BY id ASC
         """)
         rows = cursor.fetchall()
         conn.close()
@@ -291,9 +294,9 @@ def retrain_ensemble_from_trade_journal(db_path: str = "./finvision_data.db") ->
         wins = sum(1 for r in rows if r[5] in ('CLOSED_PROFIT', 'WON', 'TARGET_HIT') or (r[6] is not None and r[6] > 0))
         win_rate = round((wins / total_samples) * 100.0, 1)
 
-        # Finding 6 Fix: Walk-forward expectancy calibration across 80% train / 20% holdout split.
-        # Sweeps decision thresholds and selects the one maximizing out-of-sample expectancy,
-        # preventing the destabilizing hot-streak feedback trap.
+        # Walk-forward expectancy calibration across 80% train / 20% holdout split.
+        # Sweeps candidate decision thresholds against holdout trades matching predicted_win_prob,
+        # selecting the threshold maximizing out-of-sample expectancy.
         split_idx = int(total_samples * 0.8)
         train_trades = rows[:split_idx]
         holdout_trades = rows[split_idx:]
@@ -302,19 +305,30 @@ def retrain_ensemble_from_trade_journal(db_path: str = "./finvision_data.db") ->
         best_expectancy = -1e9
 
         for candidate_thresh in (0.52, 0.54, 0.56, 0.58, 0.60, 0.62):
+            # Evaluate trades that would have been taken under candidate_thresh
+            filtered_holdout = []
+            for r in holdout_trades:
+                raw_prob = r[7] if len(r) > 7 and r[7] is not None else 0.0
+                norm_prob = float(raw_prob) / 100.0 if float(raw_prob) > 1.0 else float(raw_prob)
+                if norm_prob <= 0.0 or norm_prob >= candidate_thresh:
+                    filtered_holdout.append(r)
+
+            if not filtered_holdout:
+                continue
+
             holdout_pnl = [
                 float(r[6]) if r[6] is not None else (1.0 if r[5] in ('CLOSED_PROFIT', 'WON', 'TARGET_HIT') else -1.0)
-                for r in holdout_trades
+                for r in filtered_holdout
             ]
             win_count = sum(1 for p in holdout_pnl if p > 0)
             loss_count = sum(1 for p in holdout_pnl if p <= 0)
             avg_win = float(np.mean([p for p in holdout_pnl if p > 0])) if win_count > 0 else 1.0
             avg_loss = abs(float(np.mean([p for p in holdout_pnl if p <= 0]))) if loss_count > 0 else 1.0
-            
+
             p_win = win_count / max(1, len(holdout_pnl))
             # Economic Expectancy: E = (P_win * Avg_Win) - (P_loss * Avg_Loss)
             expectancy = (p_win * avg_win) - ((1.0 - p_win) * avg_loss)
-            
+
             if expectancy > best_expectancy:
                 best_expectancy = expectancy
                 best_threshold = candidate_thresh

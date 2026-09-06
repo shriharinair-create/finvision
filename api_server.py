@@ -103,7 +103,7 @@ def root():
     }
 
 
-@app.get("/api/regime")
+@app.get("/api/regime", dependencies=[Depends(verify_api_key)])
 def get_regime():
     """Returns the live Indian Market Regime and Cross-Asset Macro Headwinds."""
     try:
@@ -118,7 +118,7 @@ def get_regime():
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/api/setup/{ticker}")
+@app.get("/api/setup/{ticker}", dependencies=[Depends(verify_api_key)])
 def get_setup(ticker: str, forecast_days: int = 5):
     """Computes quantitative forecast, ML consensus, VaR, and risk levels for a stock."""
     try:
@@ -170,7 +170,7 @@ def get_setup(ticker: str, forecast_days: int = 5):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/api/gtt/{ticker}")
+@app.get("/api/gtt/{ticker}", dependencies=[Depends(verify_api_key)])
 def get_gtt(ticker: str):
     """Returns ready-to-copy GTT order parameters formatted for Zerodha Kite / Groww."""
     try:
@@ -201,14 +201,14 @@ def get_gtt(ticker: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/api/bse/resolve/{query}")
+@app.get("/api/bse/resolve/{query}", dependencies=[Depends(verify_api_key)])
 def resolve_bse(query: str, exchange: str = "NSE"):
     """Universally resolves any 6-digit BSE Scrip Code or alphabetical symbol."""
     res = resolve_indian_ticker(query, preferred_exchange=exchange)
     return {"status": "SUCCESS", "resolution": res}
 
 
-@app.get("/api/bse/quote/{ticker_or_code}")
+@app.get("/api/bse/quote/{ticker_or_code}", dependencies=[Depends(verify_api_key)])
 def get_bse_quote(ticker_or_code: str):
     """Retrieves official BSE EOD Bhavcopy quote and turnover stats from local database."""
     quote = get_bse_eod_quote(ticker_or_code)
@@ -227,15 +227,19 @@ def receive_tradingview_alert(payload: TradingViewWebhookPayload):
     """
     Receives alerts from TradingView Pine Script webhooks.
     Validates signal against FinVision's ML Ensemble & Regime Gatekeeper before simulated execution.
-    Protected by passcode verification if configured.
+    Protected by mandatory passcode verification (H4 Fix).
     """
     configured_passcode = os.getenv("FINVISION_WEBHOOK_PASSCODE", "").strip() or get_api_key_secret()
-    if configured_passcode:
-        if not payload.passcode or not hmac.compare_digest(payload.passcode.strip(), configured_passcode):
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Unauthorized webhook alert: Invalid or missing passcode."
-            )
+    if not configured_passcode:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Webhook alert endpoint disabled: Set FINVISION_WEBHOOK_PASSCODE or FINVISION_API_KEY to accept alerts."
+        )
+    if not payload.passcode or not hmac.compare_digest(payload.passcode.strip(), configured_passcode):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Unauthorized webhook alert: Invalid or missing passcode."
+        )
 
     ticker = payload.ticker.upper()
     if not ticker.endswith(".NS") and not ticker.endswith(".BO"):
@@ -269,6 +273,7 @@ def receive_tradingview_alert(payload: TradingViewWebhookPayload):
         stop_loss_price=sl_p,
         shares=10,
         notes=f"TradingView Alert [{payload.strategy}]: ML Confirmed ({ml_res.get('badge', 'Active')})",
+        source="EXTERNAL_WEBHOOK",
     )
 
     return {

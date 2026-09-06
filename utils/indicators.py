@@ -154,6 +154,18 @@ def calculate_atr_value(df: pd.DataFrame, period: int = 14) -> float:
     return float(series.iloc[-1])
 
 
+def compute_atr(df: pd.DataFrame, period: int = 14, min_pct_of_price: float = 0.0075) -> float:
+    """Canonical scalar ATR with minimum percentage-of-price floor (A1 Fix)."""
+    if df.empty:
+        return 1.0
+    val = calculate_atr_value(df, period=period)
+    close_last = float(df["Close"].dropna().iloc[-1]) if not df.empty and "Close" in df else 100.0
+    min_floor = close_last * min_pct_of_price
+    if not np.isfinite(val) or val <= 0:
+        return max(1.0, min_floor)
+    return max(val, min_floor)
+
+
 # ── Volume indicators ─────────────────────────────────────────────────────────
 
 def obv(df: pd.DataFrame) -> pd.Series:

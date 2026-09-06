@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import datetime
 import json
+import os
 import sqlite3
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -20,13 +21,17 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-DB_PATH = Path("./finvision_data.db")
+# M3 Fix: Anchor DB_PATH to project root, not cwd-relative
+DB_PATH = Path(os.environ.get("FINVISION_DB_PATH", str(Path(__file__).resolve().parent.parent / "finvision_data.db")))
 
 
 def get_connection() -> sqlite3.Connection:
-    """Get a thread-safe connection to the local SQLite database."""
-    conn = sqlite3.connect(str(DB_PATH), check_same_thread=False)
+    """Get a thread-safe connection to SQLite with WAL mode and busy timeout (M2 Fix)."""
+    conn = sqlite3.connect(str(DB_PATH), check_same_thread=False, timeout=30.0)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA synchronous=NORMAL;")
+    conn.execute("PRAGMA busy_timeout=30000;")
     return conn
 
 
@@ -86,9 +91,21 @@ def init_db() -> None:
                 pnl_amount REAL DEFAULT 0.0,
                 pnl_pct REAL DEFAULT 0.0,
                 notes TEXT,
+                regime_at_entry TEXT DEFAULT 'NORMAL',
+                predicted_win_prob REAL DEFAULT 0.50,
+                source TEXT DEFAULT 'AUTO_TRADER',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        for col, col_def in [
+            ("regime_at_entry", "TEXT DEFAULT 'NORMAL'"),
+            ("predicted_win_prob", "REAL DEFAULT 0.50"),
+            ("source", "TEXT DEFAULT 'AUTO_TRADER'"),
+        ]:
+            try:
+                cursor.execute(f"ALTER TABLE paper_trades ADD COLUMN {col} {col_def}")
+            except Exception:
+                pass
 
         # 4. Statistical Causal Rules Cache
         cursor.execute("""
@@ -384,6 +401,9 @@ def log_paper_trade(
     execution_mode: str = "SIMULATION",
     horizon: str = "DAY_TRADE",
     user_id: Optional[str] = None,
+    regime_at_entry: str = "NORMAL",
+    predicted_win_prob: float = 0.50,
+    source: str = "AUTO_TRADER",
 ) -> int:
     """Log a new simulated or broker-dispatched trade strictly isolated to the specified user."""
     from utils.user_prefs import get_current_user_id
@@ -395,9 +415,9 @@ def log_paper_trade(
         cursor = conn.cursor()
         cursor.execute("""
             INSERT INTO paper_trades
-            (timestamp, ticker, trade_type, entry_price, target_price, stop_loss_price, shares, position_value, notes, is_auto_trade, execution_mode, horizon, user_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (ts_now, ticker.upper(), trade_type, entry_price, target_price, stop_loss_price, shares, pos_val, notes, is_auto_trade, execution_mode, horizon, effective_user))
+            (timestamp, ticker, trade_type, entry_price, target_price, stop_loss_price, shares, position_value, notes, is_auto_trade, execution_mode, horizon, user_id, regime_at_entry, predicted_win_prob, source)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (ts_now, ticker.upper(), trade_type, entry_price, target_price, stop_loss_price, shares, pos_val, notes, is_auto_trade, execution_mode, horizon, effective_user, regime_at_entry, predicted_win_prob, source))
         conn.commit()
         return cursor.lastrowid or 0
 
