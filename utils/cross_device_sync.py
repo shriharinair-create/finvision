@@ -397,3 +397,118 @@ def pull_and_apply_cloud_sync() -> dict[str, Any]:
         "last_synced_at": last_applied,
         "message": f"Already up-to-date with {remote_payload.get('source_device', 'remote')}.",
     }
+
+
+# ── 5. ATOMIC SINGLE-WRITER EXECUTION LEASE (SPLIT-BRAIN PREVENTION) ────────────
+
+def _ensure_lease_table():
+    with get_connection() as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS execution_lease (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                lease_holder TEXT NOT NULL,
+                lease_token TEXT NOT NULL,
+                acquired_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL
+            )
+        """)
+        conn.commit()
+
+
+def acquire_execution_lease(node_id: str, ttl_seconds: int = 90) -> tuple[bool, str, str]:
+    """
+    Attempts to acquire or extend the single-writer execution lease.
+    Guarantees that only ONE node (PC or Cloud) can dispatch live orders during any cycle.
+    Returns:
+        (acquired: bool, message: str, lease_token: str)
+    """
+    import uuid
+    _ensure_lease_table()
+    now_dt = datetime.datetime.now(datetime.timezone.utc)
+    now_iso = now_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+    expires_dt = now_dt + datetime.timedelta(seconds=ttl_seconds)
+    expires_iso = expires_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+    new_token = str(uuid.uuid4())
+
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT lease_holder, lease_token, expires_at FROM execution_lease WHERE id = 1")
+        row = cur.fetchone()
+
+        if not row:
+            cur.execute("""
+                INSERT INTO execution_lease (id, lease_holder, lease_token, acquired_at, expires_at)
+                VALUES (1, ?, ?, ?, ?)
+            """, (node_id, new_token, now_iso, expires_iso))
+            conn.commit()
+            return True, f"Execution lease acquired by {node_id}.", new_token
+
+        current_holder, current_token, current_expires = row[0], row[1], row[2]
+        try:
+            exp_dt = datetime.datetime.fromisoformat(current_expires.replace("Z", "+00:00"))
+        except Exception:
+            exp_dt = now_dt - datetime.timedelta(seconds=1)
+
+        is_expired = now_dt > exp_dt
+
+        if is_expired:
+            cur.execute("""
+                UPDATE execution_lease
+                SET lease_holder = ?, lease_token = ?, acquired_at = ?, expires_at = ?
+                WHERE id = 1
+            """, (node_id, new_token, now_iso, expires_iso))
+            conn.commit()
+            return True, f"Expired lease superseded by {node_id}.", new_token
+        elif current_holder == node_id:
+            cur.execute("""
+                UPDATE execution_lease
+                SET lease_token = ?, expires_at = ?
+                WHERE id = 1
+            """, (new_token, expires_iso))
+            conn.commit()
+            return True, f"Execution lease renewed for {node_id}.", new_token
+        else:
+            diff_secs = max(0.0, (exp_dt - now_dt).total_seconds())
+            return False, f"Lease actively held by {current_holder} ({diff_secs:.1f}s remaining).", current_token
+
+
+def release_execution_lease(node_id: str, lease_token: str) -> bool:
+    """Releases the execution lease gracefully when cycle finishes."""
+    _ensure_lease_table()
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT lease_holder, lease_token FROM execution_lease WHERE id = 1")
+        row = cur.fetchone()
+        if row and row[0] == node_id and row[1] == lease_token:
+            cur.execute("DELETE FROM execution_lease WHERE id = 1")
+            conn.commit()
+            return True
+    return False
+
+
+def get_active_lease() -> dict[str, Any]:
+    """Returns current lease holder status and expiration telemetry."""
+    _ensure_lease_table()
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT lease_holder, lease_token, acquired_at, expires_at FROM execution_lease WHERE id = 1")
+        row = cur.fetchone()
+        if not row:
+            return {"active": False, "holder": None, "expires_at": None, "remaining_seconds": 0}
+        now_dt = datetime.datetime.now(datetime.timezone.utc)
+        try:
+            exp_dt = datetime.datetime.fromisoformat(row[3].replace("Z", "+00:00"))
+            rem = max(0.0, (exp_dt - now_dt).total_seconds())
+            is_active = rem > 0
+        except Exception:
+            is_active = False
+            rem = 0.0
+        return {
+            "active": is_active,
+            "holder": row[0],
+            "token": row[1],
+            "acquired_at": row[2],
+            "expires_at": row[3],
+            "remaining_seconds": round(rem, 1),
+        }
+

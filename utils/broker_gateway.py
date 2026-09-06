@@ -15,11 +15,14 @@ SAFETY GUARANTEE:
 """
 
 from __future__ import annotations
+import ipaddress
 import json
 import logging
 from typing import Dict, Any, Optional
 import urllib.request
 import urllib.error
+from urllib.parse import urlparse
+import uuid
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +33,48 @@ SUPPORTED_BROKERS = [
     "Angel One",
     "Fenix Webhook / n8n",
 ]
+
+# Trusted official broker API host suffixes
+ALLOWED_BROKER_DOMAINS = [
+    "kite.trade",
+    "zerodha.com",
+    "upstox.com",
+    "angelone.in",
+    "angelbroking.com",
+    "groww.in",
+]
+
+
+def validate_broker_endpoint(webhook_url: str) -> tuple[bool, str]:
+    """
+    Validates the destination endpoint for live broker routing.
+    Protects against SSRF, internal cloud metadata exfiltration, and insecure protocols.
+    """
+    if not webhook_url or not isinstance(webhook_url, str):
+        return False, "Webhook URL cannot be empty."
+
+    parsed = urlparse(webhook_url.strip())
+    if parsed.scheme.lower() != "https":
+        return False, "Live broker endpoints must strictly use secure HTTPS (http:// is prohibited)."
+
+    hostname = (parsed.hostname or "").lower()
+    if not hostname:
+        return False, "Invalid endpoint hostname."
+
+    # 1. Block loopback, localhost, and cloud metadata endpoints
+    if hostname in ("localhost", "127.0.0.1", "::1", "metadata.google.internal"):
+        return False, "Localhost and cloud-metadata addresses are strictly prohibited (SSRF Guard)."
+
+    # 2. Check if IP address is provided directly
+    try:
+        ip = ipaddress.ip_address(hostname)
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
+            return False, f"Private or link-local IP address '{hostname}' is prohibited."
+    except ValueError:
+        # Not a raw IP address; hostname is a domain name
+        pass
+
+    return True, "Valid broker endpoint."
 
 
 def build_broker_order_payload(
@@ -129,16 +174,32 @@ def dispatch_broker_order(
     dry_run: bool = True,
 ) -> Dict[str, Any]:
     """
-    Dispatches order to live broker API or webhook.
+    Dispatches order to live broker API or webhook with guaranteed idempotency.
     Guaranteed dry-run safety when dry_run=True.
     """
+    idempotency_key = str(uuid.uuid4())
+    payload = dict(payload)
+    payload["idempotency_key"] = idempotency_key
+
     if dry_run or not webhook_url:
+        sim_id = f"SIM_{uuid.uuid4().hex[:12].upper()}"
         return {
             "status": "SIMULATED_SUCCESS",
             "message": f"🛡️ [DRY RUN / SAFE SIMULATION] {broker} order payload prepared successfully.",
             "broker": broker,
             "payload": payload,
-            "order_id": f"SIM_{abs(hash(json.dumps(payload, sort_keys=True))) % 10000000}",
+            "order_id": sim_id,
+            "idempotency_key": idempotency_key,
+        }
+
+    # SSRF & Endpoint Validation Guard
+    is_valid_url, url_err = validate_broker_endpoint(webhook_url)
+    if not is_valid_url:
+        logger.error(f"Broker dispatch blocked by security guard: {url_err}")
+        return {
+            "status": "SECURITY_ERROR",
+            "message": f"❌ Broker dispatch blocked: {url_err}",
+            "payload": payload,
         }
 
     try:
@@ -146,6 +207,7 @@ def dispatch_broker_order(
         headers = {
             "Content-Type": "application/json",
             "User-Agent": "FinVision-Terminal/3.0",
+            "X-Idempotency-Key": idempotency_key,
         }
         if api_key and access_token:
             headers["Authorization"] = f"token {api_key}:{access_token}"
@@ -158,6 +220,7 @@ def dispatch_broker_order(
                 "message": f"🚀 Live order dispatched to {broker} successfully!",
                 "response": resp_body,
                 "payload": payload,
+                "idempotency_key": idempotency_key,
             }
     except Exception as e:
         logger.error(f"Broker dispatch error: {e}")
@@ -165,4 +228,6 @@ def dispatch_broker_order(
             "status": "ERROR",
             "message": f"❌ Broker API error: {str(e)}",
             "payload": payload,
+            "idempotency_key": idempotency_key,
         }
+

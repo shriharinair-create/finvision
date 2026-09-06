@@ -433,18 +433,56 @@ def render_mode_settings() -> None:
             )
 
         if target_exec_mode == "LIVE_BROKER":
-            st.warning("⚠️ **Live Broker Gateway Activated**: Real orders will be transmitted to your broker endpoint.")
+            st.error("🚨 **LIVE BROKER ORDER ROUTING SELECTED**: Real capital orders will be transmitted to your broker endpoint.")
+            st.markdown(
+                """
+                <div style="background-color: #2D1515; border: 1px solid #FF5252; padding: 12px; border-radius: 6px; margin-bottom: 12px;">
+                    <div style="color: #FF8A80; font-weight: bold; font-size: 14px;">⚠️ High-Friction Real-Money Arming Ceremony</div>
+                    <div style="color: #D1D5DB; font-size: 13px; margin-top: 4px;">
+                        To prevent accidental live order execution, activating live broker routing requires explicit PIN re-authentication
+                        and typed confirmation. If unconfirmed, FinVision strictly defaults to Safe Simulation.
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+            c_arm1, c_arm2 = st.columns(2)
+            with c_arm1:
+                arm_pin = st.text_input("Enter Trader PIN to Authorize Live Routing", type="password", key="settings_arm_pin", placeholder="Enter your 4-digit PIN")
+            with c_arm2:
+                arm_phrase = st.text_input("Type 'CONFIRM LIVE ORDERS' to Arm", key="settings_arm_phrase", placeholder="CONFIRM LIVE ORDERS")
+
             brk_url_val = st.text_input(
-                "Broker Webhook / Gateway Endpoint URL",
+                "Broker Webhook / Gateway Endpoint URL (HTTPS Only)",
                 value=cur_webhook,
                 type="password",
                 key="settings_broker_webhook_input",
                 placeholder="https://api.kite.trade/orders",
+                help="Official HTTPS broker REST API endpoint or secure webhook."
             )
         else:
             brk_url_val = cur_webhook
+            arm_pin = ""
+            arm_phrase = ""
 
         if st.button("💾 Save Auto-Trader Settings", key="btn_save_auto_trader_settings", use_container_width=True):
+            final_exec_mode = target_exec_mode
+            if target_exec_mode == "LIVE_BROKER":
+                from utils.user_prefs import authenticate_user_pin
+                curr_u = st.session_state.get("authenticated_user", "")
+                is_valid_pin, _, _ = authenticate_user_pin(curr_u, arm_pin)
+                if not is_valid_pin:
+                    st.error("❌ Live Arming Failed: Invalid Trader PIN. Live Broker Routing was NOT enabled.")
+                    return
+                if arm_phrase.strip() != "CONFIRM LIVE ORDERS":
+                    st.error("❌ Live Arming Failed: Exact phrase 'CONFIRM LIVE ORDERS' must be typed. Live Broker Routing was NOT enabled.")
+                    return
+                from utils.broker_gateway import validate_broker_endpoint
+                is_valid_url, url_err = validate_broker_endpoint(brk_url_val)
+                if not is_valid_url:
+                    st.error(f"❌ Invalid Broker Endpoint: {url_err}")
+                    return
+
             mapped_h = []
             for h in sel_hz:
                 if "Day" in h:
@@ -456,7 +494,7 @@ def render_mode_settings() -> None:
 
             new_at_cfg = {
                 "is_enabled": t_master,
-                "execution_mode": target_exec_mode,
+                "execution_mode": final_exec_mode,
                 "enabled_horizons": ",".join(mapped_h) if mapped_h else "DAY_TRADE",
                 "max_concurrent_positions": max_p_val,
                 "risk_pct_per_trade": risk_cap_val,

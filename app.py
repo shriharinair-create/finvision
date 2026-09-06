@@ -139,17 +139,12 @@ from utils.user_prefs import (
     get_primary_admin_username,
 )
 
-# Seamless auto-login via URL query params (e.g. ?user=shrihari&pin=2026 or ?u=shrihari)
+# Security Hardening: Never accept or log credentials via URL query parameters.
+# Cleanse any accidentally provided PINs from browser address bar immediately.
 try:
-    _qp = st.query_params
-    _qu = _qp.get("user") or _qp.get("u")
-    _qp_pin = _qp.get("pin") or _qp.get("p")
-    if _qu and _qp_pin and "authenticated_user" not in st.session_state:
-        _ok, _msg, _udata = authenticate_user_pin(_qu, _qp_pin)
-        if _ok:
-            st.session_state["authenticated_user"] = _udata["username"]
-            st.session_state["user_display_name"] = _udata["display_name"]
-            st.session_state["user_role"] = _udata.get("role", "trader")
+    if "pin" in st.query_params or "p" in st.query_params:
+        st.query_params.pop("pin", None)
+        st.query_params.pop("p", None)
 except Exception:
     pass
 

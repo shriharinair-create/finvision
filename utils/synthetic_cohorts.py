@@ -161,13 +161,16 @@ def ensure_synthetic_cohorts_registered() -> list[str]:
 
     USERS_DIR.mkdir(parents=True, exist_ok=True)
 
+    import secrets
     for pod_id, pod_cfg in SYNTHETIC_PODS.items():
         if pod_id not in registry:
+            pod_salt = secrets.token_hex(16)
             registry[pod_id] = {
                 "username": pod_id,
                 "display_name": pod_cfg["name"],
-                "pin_hash": _hash_pin("0000"),
-                "passphrase_hash": _hash_passphrase("synthetic_pod_pass2026!", pod_id),
+                "user_salt": pod_salt,
+                "pin_hash": _hash_pin("0000", pod_salt),
+                "passphrase_hash": _hash_passphrase("synthetic_pod_pass2026!", pod_salt),
                 "recovery_phrase": generate_recovery_phrase(),
                 "role": "synthetic_pod",
                 "is_synthetic": True,

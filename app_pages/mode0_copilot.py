@@ -590,12 +590,20 @@ def render_mode0():
         sel_brk = auto_cfg.get("selected_broker", "Zerodha Kite")
         wb_url_val = auto_cfg.get("broker_webhook_url", "")
         if chosen_exec_mode == "LIVE_BROKER":
-            st.warning("⚠️ **Live Trading Active**: Autonomous orders will be dispatched directly to your broker API.")
+            st.error("🚨 **LIVE REAL-MONEY ROUTING**: Real capital orders will be dispatched to your broker API.")
+            c_arm1, c_arm2 = st.columns(2)
+            with c_arm1:
+                arm_pin_co = st.text_input("Trader PIN to Authorize Live Execution", type="password", key="arm_pin_copilot", placeholder="Enter 4-digit PIN")
+            with c_arm2:
+                arm_phrase_co = st.text_input("Type 'CONFIRM LIVE ORDERS'", key="arm_phrase_copilot", placeholder="CONFIRM LIVE ORDERS")
             c_brk1, c_brk2 = st.columns(2)
             with c_brk1:
                 sel_brk = st.selectbox("Active Broker", SUPPORTED_BROKERS, index=0, key="sel_at_broker_cfg")
             with c_brk2:
-                wb_url_val = st.text_input("Broker Webhook / API URL", value=wb_url_val, placeholder="https://api.kite.trade/orders", type="password", key="wb_at_url_cfg")
+                wb_url_val = st.text_input("Broker Webhook / API URL (HTTPS)", value=wb_url_val, placeholder="https://api.kite.trade/orders", type="password", key="wb_at_url_cfg")
+        else:
+            arm_pin_co = ""
+            arm_phrase_co = ""
 
         # Save configuration if modified
         mapped_horizons = []
@@ -607,9 +615,18 @@ def render_mode0():
             if "Long-Term" in h:
                 mapped_horizons.append("LONG_TERM")
 
+        final_exec_mode = chosen_exec_mode
+        if chosen_exec_mode == "LIVE_BROKER":
+            from utils.user_prefs import authenticate_user_pin
+            curr_u = st.session_state.get("authenticated_user", "")
+            is_valid_pin, _, _ = authenticate_user_pin(curr_u, arm_pin_co)
+            if not is_valid_pin or arm_phrase_co.strip() != "CONFIRM LIVE ORDERS":
+                final_exec_mode = "SIMULATION"
+                st.warning("⚠️ Live routing unconfirmed (requires valid PIN and 'CONFIRM LIVE ORDERS'). Safely defaulted to Simulation.")
+
         new_cfg = {
             "is_enabled": is_at_active,
-            "execution_mode": chosen_exec_mode,
+            "execution_mode": final_exec_mode,
             "enabled_horizons": ",".join(mapped_horizons) if mapped_horizons else "DAY_TRADE",
             "max_concurrent_positions": new_max_pos,
             "risk_pct_per_trade": top_risk_pct,
@@ -622,7 +639,7 @@ def render_mode0():
         }
 
         if (
-            chosen_exec_mode != cur_mode
+            final_exec_mode != cur_mode
             or ",".join(mapped_horizons) != cur_horizons_raw
             or new_max_pos != max_pos
             or sel_brk != auto_cfg.get("selected_broker")

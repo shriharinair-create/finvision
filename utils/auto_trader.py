@@ -343,15 +343,40 @@ def scan_multi_horizon_candidates(
                         stop_loss = round(entry - (atr * 1.25 * stop_mult), 2)
                         target1 = round(entry + (atr * 2.0), 2)
 
-                        # Meta-Labeling conviction check
+                        # 1. Compute dynamic 14-period RSI from intraday candle history
+                        close_series = df_t["Close"].astype(float)
+                        delta = close_series.diff()
+                        gain14 = delta.clip(lower=0).ewm(alpha=1 / 14, adjust=False).mean()
+                        loss14 = (-delta.clip(upper=0)).ewm(alpha=1 / 14, adjust=False).mean()
+                        rs14 = gain14 / loss14.replace(0, np.nan)
+                        calc_rsi = float((100 - (100 / (1 + rs14))).iloc[-1]) if not rs14.empty else 50.0
+                        if np.isnan(calc_rsi):
+                            calc_rsi = 50.0
+
+                        # 2. Compute dynamic technical conviction score (50-85%) based on trend, volume & momentum
+                        conviction_score = 50.0
+                        if len(close_series) >= 20:
+                            sma20 = float(close_series.rolling(20).mean().iloc[-1])
+                            if close > sma20:
+                                conviction_score += 10.0
+                        vol_series = df_t["Volume"].astype(float)
+                        if len(vol_series) >= 10:
+                            vol_avg = float(vol_series.rolling(10).mean().iloc[-1])
+                            curr_vol = float(vol_series.iloc[-1])
+                            if vol_avg > 0 and (curr_vol / vol_avg) >= 1.2:
+                                conviction_score += 10.0
+                        if 45.0 <= calc_rsi <= 65.0:
+                            conviction_score += 5.0
+
+                        # Domain Heuristic Risk Gate filter check
                         meta_eval = evaluate_meta_labeling_filter(
                             ticker=tick,
                             action="BUY",
                             entry_price=entry,
                             stop_loss=stop_loss,
                             target_price=target1,
-                            conviction_pct=65.0,
-                            rsi=50.0,
+                            conviction_pct=conviction_score,
+                            rsi=round(calc_rsi, 1),
                             regime_code=regime.get("regime_code", "BULL_MARKUP"),
                             vix_val=float(regime.get("vix_value", 14.5)),
                         )
@@ -522,15 +547,31 @@ def monitor_and_resolve_open_trades(dry_run: bool = True) -> list[dict[str, Any]
     resolved_trades = []
     tickers = list({t["ticker"] for t in active_trades})
 
-    # Fetch latest quotes for all active tickers in batch
+    market_status = is_indian_market_open_or_simulated()
+    is_squareoff = market_status["is_squareoff_time"]
+    has_day_trades = any(t.get("horizon") == "DAY_TRADE" for t in active_trades)
+
+    # Fetch latest quotes: Use 1-minute intraday bars for DAY_TRADE positions during active market hours
     quotes = {}
-    try:
-        data = yf.download(tickers, period="5d", interval="1d", progress=False)["Close"]
-        for t in tickers:
-            if t in data and not data[t].dropna().empty:
-                quotes[t] = float(data[t].dropna().iloc[-1])
-    except Exception as e:
-        logger.warning(f"Batch quote fetch failed for active trades: {e}")
+    if has_day_trades or market_status.get("is_market_open", False):
+        try:
+            data_intra = yf.download(tickers, period="1d", interval="1m", progress=False)["Close"]
+            for t in tickers:
+                if t in data_intra and not data_intra[t].dropna().empty:
+                    quotes[t] = float(data_intra[t].dropna().iloc[-1])
+        except Exception as e_intra:
+            logger.debug(f"Intraday 1m batch fetch notice: {e_intra}")
+
+    # Fallback to 5d daily bars for remaining/swing/long-term positions
+    missing_tickers = [t for t in tickers if t not in quotes]
+    if missing_tickers:
+        try:
+            data_daily = yf.download(missing_tickers, period="5d", interval="1d", progress=False)["Close"]
+            for t in missing_tickers:
+                if t in data_daily and not data_daily[t].dropna().empty:
+                    quotes[t] = float(data_daily[t].dropna().iloc[-1])
+        except Exception as e_daily:
+            logger.warning(f"Batch daily quote fetch failed for active trades: {e_daily}")
 
     # Resolve open persona simulations simultaneously
     try:
@@ -539,9 +580,6 @@ def monitor_and_resolve_open_trades(dry_run: bool = True) -> list[dict[str, Any]
             resolve_open_persona_simulations(quotes)
     except Exception as e_p:
         logger.debug(f"Persona simulation resolution error: {e_p}")
-
-    market_status = is_indian_market_open_or_simulated()
-    is_squareoff = market_status["is_squareoff_time"]
 
     for trade in active_trades:
         tid = trade["id"]
@@ -607,18 +645,28 @@ def monitor_and_resolve_open_trades(dry_run: bool = True) -> list[dict[str, Any]
                 log_trade_postmortem(pm)
 
                 # ML Meta-model retrain feedback (Sample Gating: N >= 50 to prevent overfitting)
+                retrain_res = {
+                    "status": "DEFERRED_SAMPLE_GATED",
+                    "message": "Sample size < 50 minimum.",
+                    "sample_count": 0,
+                    "empirical_win_rate": 0.0,
+                }
                 try:
                     with get_connection() as conn:
                         cur = conn.cursor()
                         cur.execute("SELECT count(*) FROM paper_trades WHERE status != 'OPEN'")
                         closed_sample_count = cur.fetchone()[0]
+                    retrain_res["sample_count"] = closed_sample_count
                     if closed_sample_count >= 50:
                         retrain_res = retrain_ensemble_from_trade_journal()
                         logger.info(f"Retrained ML ensemble on {closed_sample_count} completed trades.")
                     else:
-                        logger.info(f"ML retrain deferred: sample size ({closed_sample_count}) < 50 minimum.")
+                        retrain_res["status"] = "DEFERRED_SAMPLE_GATED"
+                        retrain_res["message"] = f"ML retrain deferred: sample size ({closed_sample_count}) < 50 minimum."
+                        logger.info(retrain_res["message"])
                 except Exception as ex_rt:
                     logger.debug(f"ML retrain guard error: {ex_rt}")
+                    retrain_res = {"status": "ERROR", "message": str(ex_rt)}
 
                 # Generate plain-English Learning Summary ("What Went Right vs Mistakes")
                 pnl_amt = pm["pnl_amount"]
@@ -853,7 +901,12 @@ def auto_trader_background_loop(poll_interval: int = 180):
             is_enabled = cfg.get("is_enabled", False)
 
             from utils.user_prefs import get_user_preferences
-            from utils.cross_device_sync import get_current_device_type, check_pc_heartbeat_health
+            from utils.cross_device_sync import (
+                get_current_device_type,
+                check_pc_heartbeat_health,
+                acquire_execution_lease,
+                release_execution_lease,
+            )
             exec_leader = get_user_preferences().get("execution_leader", "AUTO_FAILOVER")
             dev_type = get_current_device_type()
 
@@ -881,15 +934,23 @@ def auto_trader_background_loop(poll_interval: int = 180):
 
             if is_enabled:
                 if is_execution_leader:
-                    budget = float(cfg.get("allocated_budget", 100000.0))
-                    risk = float(cfg.get("risk_pct_per_trade", 0.01))
-                    cycle_res = run_auto_trade_cycle(user_budget=budget, risk_pct=risk)
-                    # Broadcast latest state to cloud relay for mobile telemetry
-                    try:
-                        from utils.cross_device_sync import push_sync_to_cloud_async
-                        push_sync_to_cloud_async()
-                    except Exception:
-                        pass
+                    node_id = f"{dev_type}_{os.getpid()}"
+                    has_lease, lease_msg, lease_tok = acquire_execution_lease(node_id, ttl_seconds=120)
+                    if has_lease:
+                        try:
+                            budget = float(cfg.get("allocated_budget", 100000.0))
+                            risk = float(cfg.get("risk_pct_per_trade", 0.01))
+                            cycle_res = run_auto_trade_cycle(user_budget=budget, risk_pct=risk)
+                            # Broadcast latest state to cloud relay for mobile telemetry
+                            try:
+                                from utils.cross_device_sync import push_sync_to_cloud_async
+                                push_sync_to_cloud_async()
+                            except Exception:
+                                pass
+                        finally:
+                            release_execution_lease(node_id, lease_tok)
+                    else:
+                        logger.info(f"Execution skipped: {lease_msg}")
                 else:
                     # Companion / Observer Node (e.g. Mobile connecting to Cloud while PC is alive):
                     # Pulls live status & open positions from PC Leader without duplicate execution

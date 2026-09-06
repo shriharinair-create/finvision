@@ -140,15 +140,16 @@ def compute_ml_ensemble_consensus(
         y_train = y.iloc[:-5]
         X_latest = features.iloc[[-1]]  # Today's live bar
 
-        if len(X_train) < 25 or y_train.nunique() < 2:
+        MIN_ML_SAMPLE_BARS = 60
+        if len(X_train) < MIN_ML_SAMPLE_BARS or y_train.nunique() < 2:
             return {
                 "available": False,
                 "ml_bias": "NEUTRAL",
                 "ml_prob_up": 0.50,
                 "ml_confidence_pct": 50.0,
-                "verdict": "CLASS_IMBALANCE",
+                "verdict": "INSUFFICIENT_SAMPLE_DEPTH",
                 "badge": "🤖 ML: Baseline",
-                "note": "Market training window lacks two-sided price movement.",
+                "note": f"Sample size ({len(X_train)} bars) < {MIN_ML_SAMPLE_BARS} minimum required to prevent noise-fitting.",
             }
 
         # 1. Random Forest (captures non-linear feature interactions)
@@ -164,10 +165,18 @@ def compute_ml_ensemble_consensus(
         # Blended Probability: 60% RF + 40% LR
         p_up = round(0.60 * p_rf_up + 0.40 * p_lr_up, 3)
 
-        if p_up >= 0.58:
+        # Apply empirical decision threshold calibrated from trade journal outcomes
+        try:
+            from utils.user_prefs import get_user_preferences
+            cal_thresh = float(get_user_preferences().get("ml_calibrated_threshold", 0.58))
+        except Exception:
+            cal_thresh = 0.58
+        bear_thresh = round(1.0 - (cal_thresh - 0.50), 3)
+
+        if p_up >= cal_thresh:
             ml_bias = "BULLISH"
             ml_conf = round(p_up * 100.0, 1)
-        elif p_up <= 0.42:
+        elif p_up <= bear_thresh:
             ml_bias = "BEARISH"
             ml_conf = round((1.0 - p_up) * 100.0, 1)
         else:
@@ -280,6 +289,13 @@ def retrain_ensemble_from_trade_journal(db_path: str = "./finvision_data.db") ->
         else:
             calibrated_threshold = 0.56
             adaptation_note = "Balanced calibration threshold maintained at 0.56."
+
+        # Persist calibrated threshold for live ML consensus inference
+        try:
+            from utils.user_prefs import save_user_preference
+            save_user_preference("ml_calibrated_threshold", calibrated_threshold)
+        except Exception:
+            pass
 
         return {
             "status": "SUCCESS",

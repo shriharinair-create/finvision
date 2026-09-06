@@ -40,13 +40,18 @@ def evaluate_meta_labeling_filter(
     news_sentiment: float = 0.0
 ) -> dict[str, Any]:
     """
-    Applies the Domain-Heuristic Risk Veto and Exposure Filter.
-    (Aliased as evaluate_heuristic_vetoes for quant transparency).
+    Domain-Heuristic Risk Veto and Exposure Filter.
+    Applies rule-based market regime filters, risk-reward hurdle checks, and liquidity trap vetoes.
+    
+    Quant Transparency Note:
+    This is an expert domain checklist producing a composite heuristic alignment score,
+    NOT a statistical Lopez de Prado meta-labeling machine learning model.
     Returns:
       - is_approved: bool (True if trade passes structural filters)
       - bet_sizing_factor: float (0.0, 0.5, or 1.0)
-      - meta_win_probability_pct: float (calibrated follow-through likelihood)
-      - status_badge: str (e.g. 'STRUCTURAL ALIGNMENT (1.0x)', 'CAUTIOUS RISK GATE (0.5x)', 'RISK GATE VETO (0.0x)')
+      - heuristic_score_pct: float (composite heuristic alignment score 15-92%)
+      - meta_win_probability_pct: float (backward-compatible alias for heuristic_score_pct)
+      - status_badge: str (e.g. 'RULE ALIGNMENT (1.0x)', 'CAUTIOUS RISK GATE (0.5x)', 'RISK GATE VETO (0.0x)')
       - verdict_explanation: Plain-English explanation
     """
     is_long = "BUY" in action.upper() or "LONG" in action.upper()
@@ -94,43 +99,44 @@ def evaluate_meta_labeling_filter(
         boost += 0.08
         reasons.append(f"Favorable Risk:Reward asymmetry ({rr_ratio:.2f}x >= 2.0x target).")
 
-    # Final Calibrated Follow-through Likelihood
-    calibrated_prob = float(np.clip(base_prob + boost - penalty, 0.15, 0.92))
-    meta_win_prob_pct = round(calibrated_prob * 100.0, 1)
+    # Composite Heuristic Alignment Score
+    calibrated_score = float(np.clip(base_prob + boost - penalty, 0.15, 0.92))
+    heuristic_score = round(calibrated_score * 100.0, 1)
 
     # Bet Sizing Factor Determination
-    if exit_trap or meta_win_prob_pct < 45.0 or (is_long and regime_code == "BEAR_MARKDOWN" and meta_win_prob_pct < 55.0):
+    if exit_trap or heuristic_score < 45.0 or (is_long and regime_code == "BEAR_MARKDOWN" and heuristic_score < 55.0):
         is_approved = False
         sizing_factor = 0.0
-        badge = "? HEURISTIC RISK VETO (0.0x)"
+        badge = "🛑 RULE VETO (0.0x)"
         badge_color = "#FF5252"
         explanation = (
-            f"Risk Gate VETO: Calibrated follow-through likelihood is {meta_win_prob_pct}%. "
+            f"Risk Gate VETO: Heuristic score is {heuristic_score}%. "
             f"Structural risk rules veto this setup to protect capital. " + (" ".join(reasons))
         )
-    elif meta_win_prob_pct < 62.0:
+    elif heuristic_score < 62.0:
         is_approved = True
         sizing_factor = 0.5
-        badge = "?? CAUTIOUS RISK GATE (0.5x)"
+        badge = "⚠️ CAUTIOUS GATE (0.5x)"
         badge_color = "#FFB300"
         explanation = (
-            f"Risk Gate Caution: Moderate follow-through likelihood ({meta_win_prob_pct}%). "
+            f"Risk Gate Caution: Moderate heuristic score ({heuristic_score}%). "
             f"Position size trimmed to 50% for risk buffer. " + (" ".join(reasons))
         )
     else:
         is_approved = True
         sizing_factor = 1.0
-        badge = "? STRUCTURAL ALIGNMENT (1.0x)"
+        badge = "✅ STRUCTURAL ALIGNMENT (1.0x)"
         badge_color = "#00E676"
         explanation = (
-            f"Risk Gate Approved: Strong structural alignment ({meta_win_prob_pct}% follow-through likelihood). "
+            f"Risk Gate Approved: Strong structural alignment ({heuristic_score}% heuristic score). "
             f"Full budget sizing allocated. " + (" ".join(reasons))
         )
 
     return {
         "is_approved": is_approved,
         "bet_sizing_factor": sizing_factor,
-        "meta_win_probability_pct": meta_win_prob_pct,
+        "heuristic_score_pct": heuristic_score,
+        "meta_win_probability_pct": heuristic_score,  # backward-compatible alias
         "status_badge": badge,
         "badge_color": badge_color,
         "verdict_explanation": explanation,
