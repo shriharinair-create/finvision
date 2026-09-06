@@ -297,3 +297,63 @@ def compute_portfolio_stress_test(
         "breakdown": breakdown,
     }
 
+
+# ══════════════════════════════════════════════════════════════════════════
+# Portfolio Sector Concentration Guardrails (Finding B5)
+# ══════════════════════════════════════════════════════════════════════════
+
+SECTOR_MAP: dict[str, str] = {
+    # Financials / Banking / NBFC
+    "HDFCBANK.NS": "FINANCIALS", "ICICIBANK.NS": "FINANCIALS", "AXISBANK.NS": "FINANCIALS",
+    "KOTAKBANK.NS": "FINANCIALS", "SBIN.NS": "FINANCIALS", "BAJFINANCE.NS": "FINANCIALS",
+    "BAJAJFINSV.NS": "FINANCIALS",
+    # IT Services
+    "TCS.NS": "IT", "INFY.NS": "IT", "WIPRO.NS": "IT", "HCLTECH.NS": "IT", "TECHM.NS": "IT",
+    # Energy / Oil & Gas / Power
+    "RELIANCE.NS": "ENERGY", "ONGC.NS": "ENERGY", "BPCL.NS": "ENERGY", "NTPC.NS": "ENERGY",
+    "POWERGRID.NS": "ENERGY", "COALINDIA.NS": "ENERGY",
+    # Auto
+    "TATAMOTORS.NS": "AUTO", "MARUTI.NS": "AUTO", "M&M.NS": "AUTO", "BAJAJ-AUTO.NS": "AUTO",
+    # Metals / Mining
+    "TATASTEEL.NS": "METALS", "JSWSTEEL.NS": "METALS", "HINDALCO.NS": "METALS",
+    # Pharma / Healthcare
+    "SUNPHARMA.NS": "PHARMA", "CIPLA.NS": "PHARMA", "DRREDDY.NS": "PHARMA",
+    # FMCG & Consumer Retail
+    "ITC.NS": "FMCG", "HINDUNILVR.NS": "FMCG", "NESTLEIND.NS": "FMCG", "TITAN.NS": "CONSUMER",
+    "ASIANPAINT.NS": "CONSUMER",
+    # Infrastructure & Telecom
+    "LT.NS": "INFRASTRUCTURE", "BHARTIARTL.NS": "TELECOM",
+}
+
+MAX_SECTOR_EXPOSURE_PCT: float = 0.35  # Cap maximum exposure in any single sector to 35% of capital (Finding B5)
+
+
+def get_sector_for_ticker(ticker: str) -> str:
+    """Returns normalized sector for a given ticker, defaulting to 'OTHER'."""
+    clean_ticker = ticker.upper().strip()
+    if not clean_ticker.endswith(".NS") and not clean_ticker.endswith(".BO") and not clean_ticker.startswith("^"):
+        clean_ticker += ".NS"
+    return SECTOR_MAP.get(clean_ticker, SECTOR_MAP.get(clean_ticker.replace(".BO", ".NS"), "OTHER"))
+
+
+def sector_exposure_pct(
+    candidate_ticker: str,
+    existing_positions: list[dict[str, Any]],
+    candidate_value: float,
+    total_capital: float
+) -> float:
+    """
+    Computes projected sector exposure percentage if candidate is entered (Finding B5).
+    """
+    if total_capital <= 0:
+        return 0.0
+    cand_sector = get_sector_for_ticker(candidate_ticker)
+    existing_sector_val = sum(
+        float(p.get("position_value", float(p.get("entry_price", 0.0)) * int(p.get("shares", 0))))
+        for p in existing_positions
+        if get_sector_for_ticker(p.get("ticker", "")) == cand_sector
+    )
+    total_sector_val = existing_sector_val + candidate_value
+    return round(total_sector_val / total_capital, 4)
+
+

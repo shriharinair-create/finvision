@@ -254,6 +254,14 @@ def dispatch_broker_order(
                 "payload": payload,
                 "idempotency_key": idempotency_key,
             }
+    except (urllib.error.URLError, TimeoutError, socket.timeout) as e:
+        logger.error(f"Broker dispatch AMBIGUOUS outcome (network/timeout): {e}")
+        return {
+            "status": "AMBIGUOUS_NEEDS_RECONCILIATION",
+            "message": f"⚠️ Order may or may not have executed at {broker} — network error/timeout before confirmation. Manual verification required: {str(e)}",
+            "payload": payload,
+            "idempotency_key": idempotency_key,
+        }
     except Exception as e:
         logger.error(f"Broker dispatch error: {e}")
         return {

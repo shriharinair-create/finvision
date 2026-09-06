@@ -84,8 +84,9 @@ def detect_indian_market_regime(
             prev_b = float(b_close.iloc[-2]) if len(b_close) >= 2 else sensex_val
             sensex_pct_chg = round(((sensex_val - prev_b) / max(1.0, prev_b)) * 100.0, 2)
 
-    # 3. Fetch India VIX if missing
-    vix_val = 14.5  # Default benchmark
+    # 3. Fetch India VIX if missing (Finding A7: fail closed on outage)
+    vix_val = None
+    vix_stale = False
     if vix_df is None or vix_df.empty:
         try:
             v_data = yf.download("^INDIAVIX", period="1mo", interval="1d", progress=False)
@@ -94,10 +95,14 @@ def detect_indian_market_regime(
             if not v_data.empty and "Close" in v_data:
                 vix_val = float(v_data["Close"].dropna().iloc[-1])
         except Exception:
-            vix_val = 14.5
+            vix_stale = True
     else:
         if "Close" in vix_df:
             vix_val = float(vix_df["Close"].dropna().iloc[-1])
+
+    if vix_val is None:
+        vix_val = 22.0  # Conservative HIGH_STRESS proxy, not a calm default (Finding A7)
+        vix_stale = True
 
     # Defensive fail-closed fallback if Nifty data unavailable
     if nse_df.empty or len(nse_df) < 20 or "Close" not in nse_df:
@@ -233,6 +238,9 @@ def detect_indian_market_regime(
             f"Standard balanced trend and swing setups active."
         )
 
+    if vix_stale:
+        guidance += " ⚠️ India VIX feed unavailable — conservative volatility assumed."
+
     result = {
         "regime_code": regime_code,
         "regime_name": regime_name,
@@ -246,6 +254,7 @@ def detect_indian_market_regime(
         "cross_exchange_badge": cross_badge,
         "vix_value": round(vix_val, 2),
         "vix_regime": vix_regime,
+        "vix_data_stale": vix_stale,
         "strategy_playbook": strategy_playbook,
         "breakouts_enabled": breakouts_enabled,
         "target_multiplier": target_mult,

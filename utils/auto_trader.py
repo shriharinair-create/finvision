@@ -185,29 +185,57 @@ def evaluate_circuit_breakers(
         except Exception:
             pass
 
-    # 2. Check Daily Realized P&L from SQLite
+    # 2. Check Daily Realized P&L from SQLite (Finding B3: filter by date in SQL, not LIMIT 20)
     today_pnl = 0.0
     ist_now = now_utc + datetime.timedelta(hours=5, minutes=30)
     today_date_str = ist_now.strftime("%Y-%m-%d")
 
-    recent_closed = []
+    recent_closed_today = []
+    trailing_closed = []
+    reconciliation_needed = False
     try:
         with get_connection() as conn:
             cur = conn.cursor()
+            # Fetch all trades closed today
+            cur.execute("""
+                SELECT pnl_amount, pnl_pct, exit_timestamp, status
+                FROM paper_trades
+                WHERE status != 'OPEN' AND exit_timestamp LIKE ?
+                ORDER BY id DESC
+            """, (f"{today_date_str}%",))
+            recent_closed_today = [dict(r) for r in cur.fetchall()]
+
+            # Trailing trades for consecutive loss evaluation
             cur.execute("""
                 SELECT pnl_amount, pnl_pct, exit_timestamp, status
                 FROM paper_trades
                 WHERE status != 'OPEN'
-                ORDER BY id DESC LIMIT 20
+                ORDER BY id DESC LIMIT ?
+            """, (consec_limit * 2,))
+            trailing_closed = [dict(r) for r in cur.fetchall()]
+
+            # Finding C1: Check if any open trade requires broker reconciliation
+            cur.execute("""
+                SELECT count(*) FROM paper_trades
+                WHERE status = 'OPEN' AND (notes LIKE '%NEEDS_RECONCILIATION%' OR notes LIKE '%AMBIGUOUS DISPATCH%')
             """)
-            recent_closed = [dict(r) for r in cur.fetchall()]
+            if cur.fetchone()[0] > 0:
+                reconciliation_needed = True
     except Exception as e:
         logger.debug(f"Circuit breaker trade fetch error: {e}")
 
-    for t in recent_closed:
-        exit_ts = str(t.get("exit_timestamp") or "")
-        if today_date_str in exit_ts:
-            today_pnl += float(t.get("pnl_amount", 0.0))
+    today_pnl = sum(float(t.get("pnl_amount", 0.0)) for t in recent_closed_today)
+
+    # Finding C1: Block new entries if reconciliation is pending
+    if reconciliation_needed:
+        return {
+            "is_tripped": True,
+            "reason": "Unresolved ambiguous live broker dispatch awaiting manual reconciliation.",
+            "remaining_minutes": 60,
+            "cooldown_until": "",
+            "shield_status": "⚠️ RECONCILIATION REQUIRED: Live order dispatch status ambiguous. Manual broker check required before new entries.",
+            "allow_new_entries": False,
+        }
 
     # Max Drawdown Check
     max_allowed_loss = capital * max_dd_pct
@@ -223,10 +251,10 @@ def evaluate_circuit_breakers(
             "allow_new_entries": False,
         }
 
-    # 3. Consecutive Loss Check (Trailing 24 hours)
-    if len(recent_closed) >= consec_limit:
+    # 3. Consecutive Loss Check (Trailing window)
+    if len(trailing_closed) >= consec_limit:
         consec_losses = 0
-        for t in recent_closed[:consec_limit]:
+        for t in trailing_closed[:consec_limit]:
             if float(t.get("pnl_amount", 0.0)) < 0:
                 consec_losses += 1
             else:
@@ -396,6 +424,19 @@ def scan_multi_horizon_candidates(
                         if 45.0 <= calc_rsi <= 65.0:
                             conviction_score += 5.0
 
+                        # News catalyst scoring from learned model (Finding A2)
+                        cand_news_score = 0.0
+                        try:
+                            from utils.market_store import load_catalyst_model
+                            cat_df = load_catalyst_model()
+                            if not cat_df.empty:
+                                from utils.catalyst_learner import KeywordCatalystLearner
+                                learner = KeywordCatalystLearner()
+                                learner.learned_catalysts = cat_df
+                                cand_news_score = learner.score_todays_news(tick.replace(".NS", ""))["sentiment_score"]
+                        except Exception:
+                            cand_news_score = 0.0
+
                         # Domain Heuristic Risk Gate filter check
                         meta_eval = evaluate_meta_labeling_filter(
                             ticker=tick,
@@ -407,10 +448,11 @@ def scan_multi_horizon_candidates(
                             rsi=round(calc_rsi, 1),
                             regime_code=regime.get("regime_code", "BULL_MARKUP"),
                             vix_val=float(regime.get("vix_value", 14.5)),
+                            news_sentiment=cand_news_score,
                         )
 
-                        # Check ML ensemble consensus
-                        ml_res = compute_ml_ensemble_consensus(df_t, "BULLISH")
+                        # Check ML ensemble consensus (with ticker caching - Finding A5)
+                        ml_res = compute_ml_ensemble_consensus(df_t, "BULLISH", ticker=tick)
                         win_prob = float(meta_eval.get("meta_win_probability_pct", meta_eval.get("heuristic_score_pct", 50.0)))
                         is_conviction = (
                             meta_eval.get("is_approved") is True
@@ -430,6 +472,16 @@ def scan_multi_horizon_candidates(
                                 logger.debug(f"{tick}: sized to 0 shares at risk_pct={risk_pct}; risk exceeds tolerance, skipping candidate.")
                                 continue
 
+                            # Structured indicator pillar scores for empirical refit (Finding A1)
+                            pillar_scores = {
+                                "trend": round(1.0 if close > sma20 else -0.5, 2),
+                                "momentum": round((calc_rsi - 50.0) / 50.0, 2),
+                                "volume": round(min(2.0, (curr_vol / max(1.0, vol_avg))), 2),
+                                "support_resistance": 1.0,
+                                "regime": round(float(regime_risk_mult), 2),
+                                "news_sentiment": round(cand_news_score, 2),
+                            }
+
                             candidates.append({
                                 "ticker": tick,
                                 "horizon": "DAY_TRADE",
@@ -444,7 +496,8 @@ def scan_multi_horizon_candidates(
                                 "stop_multiplier": stop_mult,
                                 "regime_at_entry": regime.get("regime_code", "NORMAL"),
                                 "predicted_win_prob": round(win_prob, 1),
-                                "notes": f"Auto-Trader ⚡ Day Setup | Meta P(Win): {win_prob:.1f}% | ML: {ml_res.get('badge', 'BULL')}",
+                                "pillar_scores": pillar_scores,
+                                "notes": f"Auto-Trader ⚡ Day Setup | Structural Alignment Score: {win_prob:.1f}% | ML: {ml_res.get('badge', 'BULL')}",
                             })
                     except Exception as e:
                         logger.debug(f"Day scan failed for {tick}: {e}")
@@ -539,9 +592,13 @@ def scan_multi_horizon_candidates(
                     t3y = float(fund.get("target_3y", p * 1.5))
                     sl = round(p * 0.85, 2)  # 15% structural stop
 
-                    # Long-term investment tranche: max 15% of budget scaled by regime
+                    # Long-term investment tranche: max 15% of budget scaled by regime (Finding B6)
                     max_alloc = budget * 0.15 * regime_risk_mult
-                    shares = max(1, int(max_alloc / p))
+                    raw_shares = max_alloc / p
+                    if raw_shares < 1.0:
+                        logger.debug(f"{tick}: long-term allocation (₹{max_alloc:,.0f}) insufficient for 1 share at ₹{p:,.2f}; skipping.")
+                        continue
+                    shares = int(raw_shares)
                     pos_val = round(p * shares, 2)
 
                     candidates.append({
@@ -724,6 +781,37 @@ def monitor_and_resolve_open_trades(dry_run: bool = True) -> list[dict[str, Any]
                     if closed_sample_count >= 100:
                         retrain_res = retrain_ensemble_from_trade_journal()
                         logger.info(f"Retrained ML ensemble on {closed_sample_count} completed trades.")
+
+                        # Refit regime pillar weights from trade journal outcomes (Finding A1)
+                        try:
+                            from utils.adaptive_weights import fit_regime_weights_from_history
+                            from utils.market_store import save_fitted_regime_weights, get_pillar_score_history_by_regime
+                            for r_code in ("BULL_MARKUP", "HIGH_VOLATILITY_CHOP", "BEAR_MARKDOWN", "NORMAL_BALANCED", "QUIET_ACCUMULATION"):
+                                p_hist, r_hist = get_pillar_score_history_by_regime(r_code)
+                                if len(p_hist) >= 20:
+                                    fitted_w = fit_regime_weights_from_history(p_hist, r_hist, min_samples=20)
+                                    if fitted_w:
+                                        save_fitted_regime_weights(r_code, fitted_w, len(p_hist))
+                                        logger.info(f"Refitted and saved dynamic regime weights for {r_code} (N={len(p_hist)}).")
+                        except Exception as e_fit:
+                            logger.debug(f"Regime weight refit notice: {e_fit}")
+
+                        # Refit KeywordCatalystLearner causal model from news data (Finding A2)
+                        try:
+                            from utils.catalyst_learner import KeywordCatalystLearner
+                            from utils.market_store import save_catalyst_model
+                            with get_connection() as conn_news:
+                                rows_news = conn_news.execute("SELECT timestamp, notes FROM paper_trades WHERE status != 'OPEN'").fetchall()
+                            news_items = [{"timestamp": r[0], "text": r[1]} for r in rows_news if r[1]]
+                            nifty_hist = yf.download("^NSEI", period="1y", interval="1d", progress=False)
+                            if len(news_items) >= 20 and not nifty_hist.empty:
+                                learner = KeywordCatalystLearner()
+                                res_df = learner.train(news_items, nifty_hist)
+                                if not res_df.empty:
+                                    save_catalyst_model(res_df[res_df["is_significant"] == 1])
+                                    logger.info("Retrained and saved KeywordCatalystLearner model from trade journal.")
+                        except Exception as e_cat:
+                            logger.debug(f"Catalyst learner refit notice: {e_cat}")
                     else:
                         retrain_res["status"] = "DEFERRED_SAMPLE_GATED"
                         retrain_res["message"] = f"ML retrain deferred: sample size ({closed_sample_count}) < 100 minimum."
@@ -782,9 +870,13 @@ def monitor_and_resolve_open_trades(dry_run: bool = True) -> list[dict[str, Any]
 
 # ── 3. MASTER AUTO-TRADER EXECUTION CYCLE ──────────────────────────────────────
 
+_cycle_lock = threading.Lock()
+
+
 def run_auto_trade_cycle(
     user_budget: float = 100000.0,
     risk_pct: float = 0.01,
+    force_dry_run: bool = False,
 ) -> dict[str, Any]:
     """
     Executes one complete autonomous trading loop:
@@ -794,203 +886,231 @@ def run_auto_trade_cycle(
          - Sizes orders via 1% risk rule.
          - Enters trade via Simulation (paper journal) or Live Broker Gateway.
       3. Returns structured execution and self-learning telemetry.
+    Protected by non-blocking _cycle_lock to eliminate concurrency races (Finding B1).
     """
-    cfg = get_auto_trader_config()
-    is_enabled = cfg.get("is_enabled", False)
-    exec_mode = cfg.get("execution_mode", "SIMULATION")
-    max_positions = int(cfg.get("max_concurrent_positions", 3))
-    enabled_horizons = [h.strip() for h in cfg.get("enabled_horizons", "DAY_TRADE,SWING_TRADE,LONG_TERM").split(",")]
-    broker = cfg.get("selected_broker", "Zerodha Kite")
-    wb_url = cfg.get("broker_webhook_url", "")
+    if not _cycle_lock.acquire(blocking=False):
+        return {
+            "status": "CYCLE_ALREADY_RUNNING",
+            "is_enabled": None,
+            "message": "An auto-trade cycle is already in progress on this instance. Please wait for it to finish.",
+            "closed_in_cycle": [],
+            "new_entries": [],
+        }
 
-    # Step 1: Monitor and exit triggered positions
-    closed_trades = monitor_and_resolve_open_trades(dry_run=(exec_mode == "SIMULATION"))
+    try:
+        cfg = get_auto_trader_config()
+        is_enabled = cfg.get("is_enabled", False)
+        exec_mode = "SIMULATION" if force_dry_run else cfg.get("execution_mode", "SIMULATION")
+        max_positions = int(cfg.get("max_concurrent_positions", 3))
+        enabled_horizons = [h.strip() for h in cfg.get("enabled_horizons", "DAY_TRADE,SWING_TRADE,LONG_TERM").split(",")]
+        broker = cfg.get("selected_broker", "Zerodha Kite")
+        wb_url = cfg.get("broker_webhook_url", "")
+        allow_custom_webhook = bool(cfg.get("allow_custom_webhook", False))
 
-    # Step 1B: Institutional Circuit Breaker & Drawdown Shield Evaluation
-    cb_status = evaluate_circuit_breakers(capital=user_budget, budget=user_budget)
-    allow_entries = cb_status.get("allow_new_entries", True)
+        # Step 1: Monitor and exit triggered positions
+        closed_trades = monitor_and_resolve_open_trades(dry_run=(exec_mode == "SIMULATION"))
 
-    # Finding 1: Enforce Friday Weekend Risk Blackout on multi-day swing holds (>14:30 IST)
-    if cb_status.get("friday_blackout") and "SWING_TRADE" in enabled_horizons:
-        enabled_horizons = [h for h in enabled_horizons if h != "SWING_TRADE"]
-        logger.info("Friday weekend risk blackout (>14:30 IST): SWING_TRADE disabled for this cycle.")
+        # Step 1B: Institutional Circuit Breaker & Drawdown Shield Evaluation
+        cb_status = evaluate_circuit_breakers(capital=user_budget, budget=user_budget)
+        allow_entries = cb_status.get("allow_new_entries", True)
 
-    # Finding 1: Enforce broad market health gate on trade entries
-    mkt = check_broad_market_health()
-    if mkt.get("available") and mkt.get("healthy") is False:
-        if "SWING_TRADE" in enabled_horizons:
+        # Finding 1: Enforce Friday Weekend Risk Blackout on multi-day swing holds (>14:30 IST)
+        if cb_status.get("friday_blackout") and "SWING_TRADE" in enabled_horizons:
             enabled_horizons = [h for h in enabled_horizons if h != "SWING_TRADE"]
-            logger.info("Broad market unhealthy: SWING_TRADE disabled for this cycle.")
-        risk_pct = risk_pct * 0.5
-        logger.info(f"Broad market unhealthy: risk scaled down to {risk_pct:.3f}%.")
+            logger.info("Friday weekend risk blackout (>14:30 IST): SWING_TRADE disabled for this cycle.")
 
-    active_now = get_active_auto_trades()
-    new_entries = []
+        # Finding 1: Enforce broad market health gate on trade entries
+        mkt = check_broad_market_health()
+        if mkt.get("available") and mkt.get("healthy") is False:
+            if "SWING_TRADE" in enabled_horizons:
+                enabled_horizons = [h for h in enabled_horizons if h != "SWING_TRADE"]
+                logger.info("Broad market unhealthy: SWING_TRADE disabled for this cycle.")
+            risk_pct = risk_pct * 0.5
+            logger.info(f"Broad market unhealthy: risk scaled down to {risk_pct:.3f}%.")
 
-    # Step 2: If Auto-Trade is active and shields permit, scan and enter trades
-    if is_enabled:
-        open_count = len(active_now)
-        slots_available = max(0, max_positions - open_count) if allow_entries else 0
+        active_now = get_active_auto_trades()
+        new_entries = []
 
-        # Calculate deployed capital across currently active trades (Finding C3)
-        deployed_capital = sum(float(t.get("entry_price", 0.0)) * int(t.get("shares", 0)) for t in active_now)
-        available_budget = max(0.0, float(user_budget) - deployed_capital)
+        # Step 2: If Auto-Trade is active and shields permit, scan and enter trades
+        if is_enabled:
+            open_count = len(active_now)
+            slots_available = max(0, max_positions - open_count) if allow_entries else 0
 
-        if not allow_entries:
-            logger.warning(f"Auto-Trader new entries suppressed: {cb_status.get('shield_status')}")
-        elif available_budget <= 0.0:
-            logger.info(f"Auto-Trader capital fully deployed (₹{deployed_capital:,.0f} / ₹{user_budget:,.0f}). No budget for new entries.")
-            slots_available = 0
+            # Calculate deployed capital across currently active trades (Finding C3)
+            deployed_capital = sum(float(t.get("entry_price", 0.0)) * int(t.get("shares", 0)) for t in active_now)
+            available_budget = max(0.0, float(user_budget) - deployed_capital)
 
-        if slots_available > 0 and available_budget > 0.0:
-            current_tickers = [t["ticker"] for t in active_now]
-            raw_wl = cfg.get("custom_watchlist", "")
-            custom_list = [x.strip() for x in raw_wl.split(",") if x.strip()] if raw_wl else None
-            candidates = scan_multi_horizon_candidates(
-                budget=available_budget,
-                risk_pct=risk_pct,
-                enabled_horizons=enabled_horizons,
-                current_open_tickers=current_tickers,
-                custom_tickers=custom_list,
-            )
+            if not allow_entries:
+                logger.warning(f"Auto-Trader new entries suppressed: {cb_status.get('shield_status')}")
+            elif available_budget <= 0.0:
+                logger.info(f"Auto-Trader capital fully deployed (₹{deployed_capital:,.0f} / ₹{user_budget:,.0f}). No budget for new entries.")
+                slots_available = 0
 
-            # ── 🎭 Autonomous 4-Persona Quant Sandbox Evaluation ─────────────
-            try:
-                for cand in candidates:
-                    cand_t = cand["ticker"]
-                    cand_e = cand["entry_price"]
-                    cand_sl = cand["stop_loss_price"]
-                    p_props = evaluate_stock_for_personas(
-                        symbol=cand_t,
-                        ltp=cand_e,
-                        indicators={"rsi": cand.get("rsi", 55.0), "adx": cand.get("adx", 24.0), "atr": max(1.0, abs(cand_e - cand_sl)), "above_ema20": True},
-                        fundamental_score=cand.get("fundamental_score", 75.0),
-                        beta=cand.get("beta", 1.1)
-                    )
-                    for prop in p_props:
-                        log_persona_simulation(
-                            persona_id=prop["persona_id"],
-                            symbol=prop["symbol"],
-                            direction=prop["direction"],
-                            entry_price=prop["entry_price"],
-                            target_price=prop["target_price"],
-                            stop_loss=prop["stop_loss"],
-                            regime=prop["regime"],
-                            reasoning=prop["reasoning"],
-                        )
-            except Exception as e_pers:
-                logger.debug(f"Persona sandbox candidate evaluation error: {e_pers}")
-
-            # ── 🧪 Synthetic Sector Pods Multi-Cohort Forward Cycle ──────────
-            try:
-                run_cohort_simulation_cycle(live_quotes=None)
-            except Exception as e_cohort:
-                logger.debug(f"Synthetic cohort simulation notice: {e_cohort}")
-
-            running_budget = available_budget
-            for cand in candidates[:slots_available]:
-                tick = cand["ticker"]
-                h_name = cand["horizon"]
-                t_type = cand["trade_type"]
-                entry_p = cand["entry_price"]
-                tgt_p = cand["target_price"]
-                sl_p = cand["stop_loss_price"]
-                shares = cand["shares"]
-                notes = cand["notes"]
-
-                # Ensure candidate does not exceed remaining running budget (Finding C3)
-                cand_cost = entry_p * shares
-                if cand_cost > running_budget:
-                    affordable_shares = int(running_budget / entry_p) if entry_p > 0 else 0
-                    if affordable_shares <= 0:
-                        logger.debug(f"Skipping {tick}: required capital (₹{cand_cost:,.0f}) exceeds remaining budget (₹{running_budget:,.0f}).")
-                        continue
-                    shares = affordable_shares
-                    cand_cost = entry_p * shares
-
-                # Route Execution
-                if exec_mode == "LIVE_BROKER" and wb_url:
-                    payload = build_broker_order_payload(
-                        broker=broker,
-                        ticker=tick,
-                        transaction_type="BUY",
-                        quantity=shares,
-                        price=entry_p,
-                        stop_loss=sl_p,
-                        target=tgt_p,
-                        product="MIS" if h_name == "DAY_TRADE" else "CNC",
-                    )
-                    dispatch_res = dispatch_broker_order(
-                        broker=broker,
-                        payload=payload,
-                        webhook_url=wb_url,
-                        dry_run=False,
-                    )
-                    # Block phantom entries if broker dispatch failed (Finding C4)
-                    if dispatch_res.get("status") not in ("SUCCESS", "SIMULATED_SUCCESS"):
-                        logger.error(
-                            f"Live broker order dispatch failed for {tick}: {dispatch_res.get('message')} "
-                            f"(status: {dispatch_res.get('status')}). Trade NOT entered in journal."
-                        )
-                        continue
-                    log_notes = f"{notes} | Dispatched to {broker}: {dispatch_res.get('status')}"
-                else:
-                    log_notes = f"{notes} | Safe Simulation Mode"
-
-                # Deduct capital from running budget
-                running_budget = max(0.0, running_budget - cand_cost)
-
-                # Record in paper_trades journal with is_auto_trade=1, entry regime, and predicted win prob
-                tid = log_paper_trade(
-                    ticker=tick,
-                    trade_type=t_type,
-                    entry_price=entry_p,
-                    target_price=tgt_p,
-                    stop_loss_price=sl_p,
-                    shares=shares,
-                    notes=log_notes,
-                    is_auto_trade=1,
-                    execution_mode=exec_mode,
-                    horizon=h_name,
-                    regime_at_entry=cand.get("regime_at_entry", "NORMAL"),
-                    predicted_win_prob=cand.get("predicted_win_prob", 0.0),
-                    source="AUTO_TRADER",
+            if slots_available > 0 and available_budget > 0.0:
+                current_tickers = [t["ticker"] for t in active_now]
+                raw_wl = cfg.get("custom_watchlist", "")
+                custom_list = [x.strip() for x in raw_wl.split(",") if x.strip()] if raw_wl else None
+                candidates = scan_multi_horizon_candidates(
+                    budget=available_budget,
+                    risk_pct=risk_pct,
+                    enabled_horizons=enabled_horizons,
+                    current_open_tickers=current_tickers,
+                    custom_tickers=custom_list,
                 )
 
-                new_entries.append({
-                    "trade_id": tid,
-                    "ticker": tick,
-                    "horizon": h_name,
-                    "entry_price": entry_p,
-                    "target_price": tgt_p,
-                    "stop_loss_price": sl_p,
-                    "shares": shares,
-                    "conviction_pct": cand["conviction_pct"],
-                    "mode": exec_mode,
-                })
+                # ── 🎭 Autonomous 4-Persona Quant Sandbox Evaluation ─────────────
+                try:
+                    for cand in candidates:
+                        cand_t = cand["ticker"]
+                        cand_e = cand["entry_price"]
+                        cand_sl = cand["stop_loss_price"]
+                        p_props = evaluate_stock_for_personas(
+                            symbol=cand_t,
+                            ltp=cand_e,
+                            indicators={"rsi": cand.get("rsi", 55.0), "adx": cand.get("adx", 24.0), "atr": max(1.0, abs(cand_e - cand_sl)), "above_ema20": True},
+                            fundamental_score=cand.get("fundamental_score", 75.0),
+                            beta=cand.get("beta", 1.1)
+                        )
+                        for prop in p_props:
+                            log_persona_simulation(
+                                persona_id=prop["persona_id"],
+                                symbol=prop["symbol"],
+                                direction=prop["direction"],
+                                entry_price=prop["entry_price"],
+                                target_price=prop["target_price"],
+                                stop_loss=prop["stop_loss"],
+                                regime=prop["regime"],
+                                reasoning=prop["reasoning"],
+                            )
+                except Exception as e_pers:
+                    logger.debug(f"Persona sandbox candidate evaluation error: {e_pers}")
 
-    # Reload active trades after new entries
-    active_final = get_active_auto_trades()
-    recent_learnings = get_auto_trader_learnings(limit=10)
+                # ── 🧪 Synthetic Sector Pods Multi-Cohort Forward Cycle ──────────
+                try:
+                    run_cohort_simulation_cycle(live_quotes=None)
+                except Exception as e_cohort:
+                    logger.debug(f"Synthetic cohort simulation notice: {e_cohort}")
 
-    return {
-        "status": "ACTIVE" if is_enabled else "STANDBY",
-        "is_enabled": is_enabled,
-        "execution_mode": exec_mode,
-        "active_trades_count": len(active_final),
-        "active_trades": active_final,
-        "closed_in_cycle": closed_trades,
-        "new_entries": new_entries,
-        "learnings": recent_learnings,
-        "market_timing": is_indian_market_open_or_simulated(),
-        "circuit_breaker": cb_status,
-    }
+                running_budget = available_budget
+                for cand in candidates[:slots_available]:
+                    tick = cand["ticker"]
+                    h_name = cand["horizon"]
+                    t_type = cand["trade_type"]
+                    entry_p = cand["entry_price"]
+                    tgt_p = cand["target_price"]
+                    sl_p = cand["stop_loss_price"]
+                    shares = cand["shares"]
+                    notes = cand["notes"]
+
+                    # Ensure candidate does not exceed remaining running budget (Finding C3)
+                    cand_cost = entry_p * shares
+                    if cand_cost > running_budget:
+                        affordable_shares = int(running_budget / entry_p) if entry_p > 0 else 0
+                        if affordable_shares <= 0:
+                            logger.debug(f"Skipping {tick}: required capital (₹{cand_cost:,.0f}) exceeds remaining budget (₹{running_budget:,.0f}).")
+                            continue
+                        shares = affordable_shares
+                        cand_cost = entry_p * shares
+
+                    # Portfolio Sector Concentration Guard (Finding B5)
+                    from utils.risk import sector_exposure_pct, MAX_SECTOR_EXPOSURE_PCT
+                    proj_sec_exp = sector_exposure_pct(tick, active_now + new_entries, cand_cost, user_budget)
+                    if proj_sec_exp > MAX_SECTOR_EXPOSURE_PCT:
+                        logger.debug(f"Skipping {tick}: projected sector exposure ({proj_sec_exp*100:.1f}%) breaches {MAX_SECTOR_EXPOSURE_PCT*100:.0f}% cap.")
+                        continue
+
+                    # Route Execution
+                    if exec_mode == "LIVE_BROKER" and wb_url:
+                        payload = build_broker_order_payload(
+                            broker=broker,
+                            ticker=tick,
+                            transaction_type="BUY",
+                            quantity=shares,
+                            price=entry_p,
+                            stop_loss=sl_p,
+                            target=tgt_p,
+                            product="MIS" if h_name == "DAY_TRADE" else "CNC",
+                        )
+                        dispatch_res = dispatch_broker_order(
+                            broker=broker,
+                            payload=payload,
+                            webhook_url=wb_url,
+                            dry_run=False,
+                            allow_custom_webhook=allow_custom_webhook,
+                        )
+                        # Handle ambiguous dispatch outcomes vs confirmed errors (Finding C1 & C4)
+                        if dispatch_res.get("status") == "AMBIGUOUS_NEEDS_RECONCILIATION":
+                            logger.warning(f"Ambiguous dispatch outcome for {tick}: {dispatch_res.get('message')}")
+                            log_notes = f"{notes} | ⚠️ AMBIGUOUS DISPATCH — verify with broker manually: {dispatch_res.get('message')}"
+                        elif dispatch_res.get("status") not in ("SUCCESS", "SIMULATED_SUCCESS"):
+                            logger.error(
+                                f"Live broker order dispatch failed for {tick}: {dispatch_res.get('message')} "
+                                f"(status: {dispatch_res.get('status')}). Trade NOT entered in journal."
+                            )
+                            continue
+                        else:
+                            log_notes = f"{notes} | Dispatched to {broker}: {dispatch_res.get('status')}"
+                    else:
+                        log_notes = f"{notes} | Safe Simulation Mode"
+
+                    # Deduct capital from running budget
+                    running_budget = max(0.0, running_budget - cand_cost)
+
+                    # Record in paper_trades journal with is_auto_trade=1, entry regime, and predicted win prob
+                    tid = log_paper_trade(
+                        ticker=tick,
+                        trade_type=t_type,
+                        entry_price=entry_p,
+                        target_price=tgt_p,
+                        stop_loss_price=sl_p,
+                        shares=shares,
+                        notes=log_notes,
+                        is_auto_trade=1,
+                        execution_mode=exec_mode,
+                        horizon=h_name,
+                        regime_at_entry=cand.get("regime_at_entry", "NORMAL"),
+                        predicted_win_prob=cand.get("predicted_win_prob", 0.0),
+                        source="AUTO_TRADER",
+                        pillar_scores=cand.get("pillar_scores"),
+                    )
+
+                    new_entries.append({
+                        "trade_id": tid,
+                        "ticker": tick,
+                        "horizon": h_name,
+                        "entry_price": entry_p,
+                        "target_price": tgt_p,
+                        "stop_loss_price": sl_p,
+                        "shares": shares,
+                        "conviction_pct": cand["conviction_pct"],
+                        "mode": exec_mode,
+                    })
+
+        # Reload active trades after new entries
+        active_final = get_active_auto_trades()
+        recent_learnings = get_auto_trader_learnings(limit=10)
+
+        return {
+            "status": "ACTIVE" if is_enabled else "STANDBY",
+            "is_enabled": is_enabled,
+            "execution_mode": exec_mode,
+            "active_trades_count": len(active_final),
+            "active_trades": active_final,
+            "closed_in_cycle": closed_trades,
+            "new_entries": new_entries,
+            "learnings": recent_learnings,
+            "market_timing": is_indian_market_open_or_simulated(),
+            "circuit_breaker": cb_status,
+        }
+    finally:
+        _cycle_lock.release()
 
 
 # ── 4. AUTONOMOUS BACKGROUND DAEMON ───────────────────────────────────────────
 
 _auto_trader_thread: threading.Thread | None = None
 _auto_trader_stop_event = threading.Event()
+_last_decay_date = {"date": None}
 
 
 def auto_trader_background_loop(poll_interval: int = 180):
@@ -1003,6 +1123,18 @@ def auto_trader_background_loop(poll_interval: int = 180):
     time.sleep(5)
     while not _auto_trader_stop_event.is_set():
         try:
+            # Finding A3: Decay stock adaptive buffers daily toward 1.0x baseline
+            ist_now = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=5, minutes=30)
+            today_str = ist_now.strftime("%Y-%m-%d")
+            if _last_decay_date["date"] != today_str:
+                try:
+                    from utils.market_store import decay_stock_adaptive_buffers
+                    decay_stock_adaptive_buffers(decay_factor=0.97)
+                    _last_decay_date["date"] = today_str
+                    logger.info("Executed daily decay_stock_adaptive_buffers(decay_factor=0.97).")
+                except Exception as e_decay:
+                    logger.debug(f"Daily buffer decay notice: {e_decay}")
+
             cfg = get_auto_trader_config()
             is_enabled = cfg.get("is_enabled", False)
 

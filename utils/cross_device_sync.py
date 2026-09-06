@@ -302,19 +302,15 @@ def _push_sync_worker():
         # If on PC with cloud_deploy git repository, copy and push
         cloud_deploy_dir = APP_DIR / "cloud_deploy"
         if cloud_deploy_dir.exists() and (cloud_deploy_dir / ".git").exists():
-            # Copy sync state JSON and SQLite database to cloud_deploy
+            # Copy sync state JSON only (NEVER database, passwords, or registry to git)
             dest_sync_file = cloud_deploy_dir / "finvision_sync_state.json"
-            dest_db = cloud_deploy_dir / "finvision_data.db"
             try:
                 import shutil
                 shutil.copy2(str(LOCAL_SYNC_FILE), str(dest_sync_file))
-                src_db = APP_DIR / "finvision_data.db"
-                if src_db.exists():
-                    shutil.copy2(str(src_db), str(dest_db))
 
                 # Commit and push via git
                 subprocess.run(
-                    ["git", "add", "finvision_sync_state.json", "finvision_data.db"],
+                    ["git", "add", "finvision_sync_state.json"],
                     cwd=str(cloud_deploy_dir),
                     capture_output=True,
                     timeout=15,

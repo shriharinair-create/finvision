@@ -448,7 +448,7 @@ def render_mode_settings() -> None:
             )
             c_arm1, c_arm2 = st.columns(2)
             with c_arm1:
-                arm_pin = st.text_input("Enter Trader PIN to Authorize Live Routing", type="password", key="settings_arm_pin", placeholder="Enter your 4-digit PIN")
+                arm_pin = st.text_input("Enter Trader PIN to Authorize Live Routing", type="password", key="settings_arm_pin", placeholder="Enter your 6-digit PIN")
             with c_arm2:
                 arm_phrase = st.text_input("Type 'CONFIRM LIVE ORDERS' to Arm", key="settings_arm_phrase", placeholder="CONFIRM LIVE ORDERS")
 
@@ -460,8 +460,15 @@ def render_mode_settings() -> None:
                 placeholder="https://api.kite.trade/orders",
                 help="Official HTTPS broker REST API endpoint or secure webhook."
             )
+            allow_custom_wh = st.checkbox(
+                "⚠️ Allow custom webhook / automation bridge (n8n, Zapier, relay)",
+                value=bool(auto_cfg.get("allow_custom_webhook", False)),
+                key="settings_allow_custom_webhook",
+                help="Allows non-standard broker endpoints if running a self-hosted trade execution relay."
+            )
         else:
             brk_url_val = cur_webhook
+            allow_custom_wh = bool(auto_cfg.get("allow_custom_webhook", False))
             arm_pin = ""
             arm_phrase = ""
 
@@ -478,7 +485,7 @@ def render_mode_settings() -> None:
                     st.error("❌ Live Arming Failed: Exact phrase 'CONFIRM LIVE ORDERS' must be typed. Live Broker Routing was NOT enabled.")
                     return
                 from utils.broker_gateway import validate_broker_endpoint
-                is_valid_url, url_err = validate_broker_endpoint(brk_url_val)
+                is_valid_url, url_err = validate_broker_endpoint(brk_url_val, allow_custom_webhook=allow_custom_wh)
                 if not is_valid_url:
                     st.error(f"❌ Invalid Broker Endpoint: {url_err}")
                     return
@@ -501,6 +508,7 @@ def render_mode_settings() -> None:
                 "allocated_budget": float(get_user_preferences().get("total_capital", 500000.0)),
                 "selected_broker": broker_sel,
                 "broker_webhook_url": brk_url_val.strip(),
+                "allow_custom_webhook": allow_custom_wh,
             }
             save_auto_trader_config(new_at_cfg)
             st.toast("✅ Auto-Trader preferences saved successfully!", icon="🤖")

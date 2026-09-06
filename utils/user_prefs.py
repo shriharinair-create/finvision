@@ -217,7 +217,8 @@ def get_primary_admin_username() -> str:
 
 def authenticate_user_pin(username: str, pin: str) -> tuple[bool, str, dict[str, Any]]:
     """
-    Authenticates a user via 4-digit PIN with anti-brute-force rate limiting.
+    Authenticates a user via 6-digit PIN with anti-brute-force rate limiting.
+    NOTE: PIN serves strictly as a local convenience unlock; Master Passphrase is the root cryptographic boundary (Finding D4).
     Locks PIN entries for 15 minutes after 5 consecutive failures.
     Returns: (success, message, user_data)
     """
@@ -233,7 +234,7 @@ def authenticate_user_pin(username: str, pin: str) -> tuple[bool, str, dict[str,
 
     if now < locked_until:
         rem_mins = max(1, int((locked_until - now) / 60) + 1)
-        return False, f"?? Account locked due to failed PIN attempts. Wait {rem_mins} min or sign in with your Master Passphrase.", {}
+        return False, f"🔒 Account locked due to failed PIN attempts. Wait {rem_mins} min or sign in with your Master Passphrase.", {}
 
     user_salt = user_info.get("user_salt", "")
     target_hash = user_info.get("pin_hash", "")
@@ -241,23 +242,13 @@ def authenticate_user_pin(username: str, pin: str) -> tuple[bool, str, dict[str,
 
     is_valid = hmac.compare_digest(target_hash, calculated_hash)
 
-    # Backward compatibility: verify against legacy single-salt hash and auto-upgrade if valid
-    if not is_valid and len(target_hash) == 64:
-        legacy_salt = "finvision_quant_salt_v3"
-        legacy_hash = hashlib.sha256(f"{legacy_salt}_{pin.strip()}".encode("utf-8")).hexdigest()
-        if hmac.compare_digest(target_hash, legacy_hash):
-            is_valid = True
-            # Upgrade to per-user salted PBKDF2 hash
-            user_info["pin_hash"] = calculated_hash
-            _save_registry(registry)
-
     if not is_valid:
         fails = int(user_info.get("failed_pin_attempts", 0)) + 1
         user_info["failed_pin_attempts"] = fails
         if fails >= 5:
             user_info["locked_until"] = now + 900.0  # 15 minutes lock
             _save_registry(registry)
-            return False, "?? Too many failed attempts. PIN entry locked for 15 minutes. Use your Master Passphrase or 4-word Recovery Key.", {}
+            return False, "⚠️ Too many failed attempts. PIN entry locked for 15 minutes. Use your Master Passphrase or 4-word Recovery Key.", {}
         _save_registry(registry)
         rem = 5 - fails
         return False, f"Incorrect PIN. {rem} attempt{'s' if rem > 1 else ''} remaining before temporary lockout.", {}
@@ -312,8 +303,8 @@ def recover_and_reset_pin_with_passphrase(username: str, passphrase: str, new_pi
     """
     clean_user = username.strip().lower()
     clean_pin = new_pin.strip()
-    if len(clean_pin) < 4:
-        return False, "New PIN must be at least 4 digits."
+    if len(clean_pin) < 6 or not clean_pin.isdigit():
+        return False, "New PIN must be at least 6 numeric digits."
 
     ok, msg, u_data = authenticate_user_passphrase(clean_user, passphrase)
     if not ok:
@@ -327,7 +318,7 @@ def recover_and_reset_pin_with_passphrase(username: str, passphrase: str, new_pi
     user_info["failed_pin_attempts"] = 0
     user_info["locked_until"] = 0.0
     _save_registry(registry)
-    return True, "?? PIN reset successfully! You can now unlock your terminal with your new PIN."
+    return True, "✅ PIN reset successfully! You can now unlock your terminal with your new PIN."
 
 
 def recover_and_reset_pin_with_recovery_phrase(username: str, recovery_phrase_input: str, new_pin: str) -> tuple[bool, str]:
@@ -337,8 +328,8 @@ def recover_and_reset_pin_with_recovery_phrase(username: str, recovery_phrase_in
     """
     clean_user = username.strip().lower()
     clean_pin = new_pin.strip()
-    if len(clean_pin) < 4:
-        return False, "New PIN must be at least 4 digits."
+    if len(clean_pin) < 6 or not clean_pin.isdigit():
+        return False, "New PIN must be at least 6 numeric digits."
 
     registry = get_user_registry()
     if clean_user not in registry:
@@ -349,7 +340,7 @@ def recover_and_reset_pin_with_recovery_phrase(username: str, recovery_phrase_in
     locked_until = float(user_info.get("locked_until", 0.0))
     if now < locked_until:
         rem_mins = max(1, int((locked_until - now) / 60) + 1)
-        return False, f"?? Account recovery is temporarily locked due to failed attempts. Please wait {rem_mins} minutes or sign in with your Master Passphrase."
+        return False, f"🔒 Account recovery is temporarily locked due to failed attempts. Please wait {rem_mins} minutes or sign in with your Master Passphrase."
 
     user_salt = user_info.get("user_salt", "")
     target_rec_hash = user_info.get("recovery_phrase_hash", "")
@@ -361,7 +352,7 @@ def recover_and_reset_pin_with_recovery_phrase(username: str, recovery_phrase_in
         if fails >= 5:
             user_info["locked_until"] = now + 900.0  # 15 minutes lockout
             _save_registry(registry)
-            return False, "?? Too many failed verification attempts. Account recovery locked for 15 minutes."
+            return False, "⚠️ Too many failed verification attempts. Account recovery locked for 15 minutes."
         _save_registry(registry)
         rem = 5 - fails
         return False, f"Invalid 4-word recovery phrase. {rem} attempt{'s' if rem > 1 else ''} remaining before temporary lockout."
@@ -371,7 +362,7 @@ def recover_and_reset_pin_with_recovery_phrase(username: str, recovery_phrase_in
     user_info["failed_pin_attempts"] = 0
     user_info["locked_until"] = 0.0
     _save_registry(registry)
-    return True, "?? Account verified! Your PIN has been reset successfully. You can now log in."
+    return True, "✅ Account verified! Your PIN has been reset successfully. You can now log in."
 
 
 def update_user_credentials(
@@ -396,8 +387,11 @@ def update_user_credentials(
     elif new_passphrase:
         return False, "New Master Passphrase must be at least 8 characters long."
 
-    if new_pin and len(new_pin.strip()) >= 4:
-        user_info["pin_hash"] = _hash_pin(new_pin.strip(), user_salt)
+    if new_pin is not None and new_pin != "":
+        clean_np = new_pin.strip()
+        if len(clean_np) < 6 or not clean_np.isdigit():
+            return False, "New PIN must be at least 6 numeric digits."
+        user_info["pin_hash"] = _hash_pin(clean_np, user_salt)
 
     _save_registry(registry)
     return True, "Credentials updated successfully!"
@@ -424,8 +418,8 @@ def register_new_user(
         return False, "Username must be at least 3 characters long.", ""
 
     clean_pin = pin.strip()
-    if not clean_pin or len(clean_pin) < 4:
-        return False, "PIN must be at least 4 digits.", ""
+    if not clean_pin or len(clean_pin) < 6 or not clean_pin.isdigit():
+        return False, "PIN must be at least 6 numeric digits.", ""
 
     clean_passphrase = (passphrase or "").strip()
     if len(clean_passphrase) < 8:

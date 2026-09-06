@@ -235,10 +235,11 @@ def render_mode0():
         unsafe_allow_html=True
     )
 
-    # Determine logged-in user and administrative privileges
-    active_user = st.session_state.get("authenticated_user", "")
-    user_role = st.session_state.get("user_role", "trader")
-    is_admin = (user_role == "admin") or (active_user in ("admin", "shrihari"))
+    # Determine logged-in user and administrative privileges via server-side registry (Finding B4)
+    active_user = str(st.session_state.get("authenticated_user", "")).strip().lower()
+    from utils.user_prefs import get_user_registry
+    _reg = get_user_registry()
+    is_admin = (_reg.get(active_user, {}).get("role") == "admin")
 
     # Tripped Circuit Breaker Alert Banner
     if is_cb_tripped:
@@ -329,25 +330,31 @@ def render_mode0():
             if st.button("🔄 Trigger Auto-Trade Scan Cycle Now", key="btn_run_at_cycle_hero", use_container_width=True):
                 with st.spinner("🤖 Auto-Trader is monitoring positions and scanning for high-conviction entries..."):
                     cycle_report = run_auto_trade_cycle(user_budget=top_budget, risk_pct=top_risk_pct)
-                num_closed = len(cycle_report.get("closed_in_cycle", []))
-                num_entered = len(cycle_report.get("new_entries", []))
-                if num_closed > 0 or num_entered > 0:
-                    st.success(f"🎯 Cycle Complete: {num_entered} new trade(s) entered, {num_closed} position(s) exited & diagnosed.")
+                if cycle_report.get("status") == "CYCLE_ALREADY_RUNNING":
+                    st.warning("⚠️ Another auto-trade cycle is currently executing. Please wait a few seconds before triggering again.")
                 else:
-                    st.info("ℹ️ Auto-Trade scan complete: Positions monitored, no new trade triggered (within risk/conviction thresholds).")
-                try:
-                    from utils.cross_device_sync import push_sync_to_cloud_async
-                    push_sync_to_cloud_async()
-                except Exception:
-                    pass
+                    num_closed = len(cycle_report.get("closed_in_cycle", []))
+                    num_entered = len(cycle_report.get("new_entries", []))
+                    if num_closed > 0 or num_entered > 0:
+                        st.success(f"🎯 Cycle Complete: {num_entered} new trade(s) entered, {num_closed} position(s) exited & diagnosed.")
+                    else:
+                        st.info("ℹ️ Auto-Trade scan complete: Positions monitored, no new trade triggered (within risk/conviction thresholds).")
+                    try:
+                        from utils.cross_device_sync import push_sync_to_cloud_async
+                        push_sync_to_cloud_async()
+                    except Exception:
+                        pass
                 st.rerun()
         else:
-            if st.button("🔄 Test Scan My Setup", key="btn_run_my_scan_hero", use_container_width=True, help="Simulates an on-demand scan using your active personas and custom watchlist."):
-                with st.spinner("🤖 Scanning setups matching your profile settings..."):
-                    cycle_report = run_auto_trade_cycle(user_budget=top_budget, risk_pct=top_risk_pct)
-                num_closed = len(cycle_report.get("closed_in_cycle", []))
-                num_entered = len(cycle_report.get("new_entries", []))
-                st.toast(f"Scan complete: {num_entered} setup(s) evaluated.", icon="🎯")
+            if st.button("🔄 Test Scan My Setup", key="btn_run_my_scan_hero", use_container_width=True, help="Simulates an on-demand scan using your active personas and custom watchlist (Simulation Mode Only)."):
+                with st.spinner("🤖 Scanning setups matching your profile settings (Safe Simulation)..."):
+                    cycle_report = run_auto_trade_cycle(user_budget=top_budget, risk_pct=top_risk_pct, force_dry_run=True)
+                if cycle_report.get("status") == "CYCLE_ALREADY_RUNNING":
+                    st.warning("⚠️ Another auto-trade cycle is currently executing. Please wait a few seconds.")
+                else:
+                    num_closed = len(cycle_report.get("closed_in_cycle", []))
+                    num_entered = len(cycle_report.get("new_entries", []))
+                    st.toast(f"Scan complete: {num_entered} setup(s) evaluated in simulation.", icon="🎯")
                 st.rerun()
     with c_ctrl3:
         if st.button("☁️ Refresh Cloud Telemetry", key="btn_cross_device_sync_cockpit", use_container_width=True, help="Pulls latest telemetry, active positions, and quotes from the 24/7 cloud engine."):

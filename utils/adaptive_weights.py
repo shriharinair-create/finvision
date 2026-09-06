@@ -99,9 +99,18 @@ DEFAULT_WEIGHTS: dict[str, float] = {
 def get_regime_adaptive_weights(regime_name: str) -> dict[str, float]:
     """
     Returns the normalized dynamic weighting dictionary for the active regime.
+    Prefers empirically fitted profile over static priors when sufficient evidence exists (Finding A1).
     Ensures weights always sum precisely to 1.0 (100%).
     """
     clean_regime = regime_name.upper().replace(" ", "_")
+    try:
+        from utils.market_store import get_fitted_regime_weights
+        fitted = get_fitted_regime_weights(clean_regime)
+        if fitted and isinstance(fitted, dict) and sum(fitted.values()) > 0:
+            return fitted
+    except Exception:
+        pass
+
     if clean_regime in REGIME_WEIGHT_PROFILES:
         return REGIME_WEIGHT_PROFILES[clean_regime]
     for key, weights in REGIME_WEIGHT_PROFILES.items():

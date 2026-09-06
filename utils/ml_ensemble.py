@@ -103,11 +103,19 @@ def purge_overlapping(X: pd.DataFrame, y: pd.Series, horizon: int = 5) -> tuple[
     return X.iloc[keep_idx], y.iloc[keep_idx]
 
 
+import time
+
+_ML_MODEL_CACHE: dict[str, tuple[float, Any, Any]] = {}
+MIN_INDEPENDENT_BARS = 40
+MIN_MINORITY_CLASS_COUNT = 8
+
+
 def compute_ml_ensemble_consensus(
     df: pd.DataFrame,
     technical_bias: str,
     nse_df: pd.DataFrame | None = None,
     hurdle_pct: float = 0.35,
+    ticker: str | None = None,
 ) -> dict[str, Any]:
     """
     Trains an expanding-window Random Forest + Logistic Regression ensemble
@@ -154,7 +162,9 @@ def compute_ml_ensemble_consensus(
         # Finding 7 Fix: Purge overlapping 5-day return bars to obtain honest independent samples
         X_train, y_train = purge_overlapping(X_train_raw, y_train_raw, horizon=5)
 
-        MIN_INDEPENDENT_BARS = 12
+        # Finding A5: Raise independent bar floor and require minority class floor
+        MIN_INDEPENDENT_BARS = 40
+        MIN_MINORITY_CLASS_COUNT = 8
         if len(X_train) < MIN_INDEPENDENT_BARS or y_train.nunique() < 2:
             return {
                 "available": False,
@@ -166,14 +176,36 @@ def compute_ml_ensemble_consensus(
                 "note": f"Independent non-overlapping bars ({len(X_train)}) < {MIN_INDEPENDENT_BARS} minimum required to prevent noise-fitting.",
             }
 
-        # 1. Random Forest (captures non-linear feature interactions)
-        rf = RandomForestClassifier(n_estimators=30, max_depth=3, min_samples_leaf=2, random_state=42)
-        rf.fit(X_train, y_train)
-        p_rf_up = float(rf.predict_proba(X_latest)[0][1])
+        class_counts = y_train.value_counts()
+        if class_counts.min() < MIN_MINORITY_CLASS_COUNT:
+            return {
+                "available": False,
+                "ml_bias": "NEUTRAL",
+                "ml_prob_up": 0.50,
+                "ml_confidence_pct": 50.0,
+                "verdict": "CLASS_IMBALANCE_GATED",
+                "badge": "🤖 ML: Baseline",
+                "note": f"Minority class has only {class_counts.min()} samples (< {MIN_MINORITY_CLASS_COUNT} minimum).",
+            }
 
-        # 2. Logistic Regression (calibrated linear anchor)
-        lr = LogisticRegression(C=0.5, max_iter=200, random_state=42)
-        lr.fit(X_train, y_train)
+        # Model Caching per Ticker (Finding A5: avoid 780 redundant RF+LR fits per day)
+        cache_key = ticker or str(id(df))
+        cached = _ML_MODEL_CACHE.get(cache_key)
+        now_ts = time.time()
+        if cached and (now_ts - cached[0]) < 3600:
+            rf, lr = cached[1], cached[2]
+        else:
+            # 1. Random Forest (captures non-linear feature interactions)
+            rf = RandomForestClassifier(n_estimators=30, max_depth=3, min_samples_leaf=2, random_state=42)
+            rf.fit(X_train, y_train)
+
+            # 2. Logistic Regression (calibrated linear anchor)
+            lr = LogisticRegression(C=0.5, max_iter=200, random_state=42)
+            lr.fit(X_train, y_train)
+
+            _ML_MODEL_CACHE[cache_key] = (now_ts, rf, lr)
+
+        p_rf_up = float(rf.predict_proba(X_latest)[0][1])
         p_lr_up = float(lr.predict_proba(X_latest)[0][1])
 
         # Blended Probability: 60% RF + 40% LR
@@ -272,6 +304,7 @@ def retrain_ensemble_from_trade_journal(db_path: Optional[str] = None) -> dict[s
             SELECT ticker, trade_type, entry_price, target_price, stop_loss_price, status, pnl_amount, predicted_win_prob
             FROM paper_trades
             WHERE status IN ('CLOSED_PROFIT', 'CLOSED_LOSS', 'WON', 'LOST', 'TARGET_HIT', 'STOP_HIT', 'CLOSED_MANUAL', 'INTRADAY_TIME_EXIT')
+              AND (source IS NULL OR source != 'EXTERNAL_WEBHOOK')
             ORDER BY id ASC
         """)
         rows = cursor.fetchall()
@@ -310,7 +343,9 @@ def retrain_ensemble_from_trade_journal(db_path: Optional[str] = None) -> dict[s
             for r in holdout_trades:
                 raw_prob = r[7] if len(r) > 7 and r[7] is not None else 0.0
                 norm_prob = float(raw_prob) / 100.0 if float(raw_prob) > 1.0 else float(raw_prob)
-                if norm_prob <= 0.0 or norm_prob >= candidate_thresh:
+                if norm_prob <= 0.0:
+                    continue  # Finding A6: Exclude unlabeled/zero-probability trades from calibration
+                if norm_prob >= candidate_thresh:
                     filtered_holdout.append(r)
 
             if not filtered_holdout:

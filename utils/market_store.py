@@ -94,6 +94,7 @@ def init_db() -> None:
                 regime_at_entry TEXT DEFAULT 'NORMAL',
                 predicted_win_prob REAL DEFAULT 0.50,
                 source TEXT DEFAULT 'AUTO_TRADER',
+                pillar_scores_json TEXT DEFAULT '{}',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
@@ -101,11 +102,31 @@ def init_db() -> None:
             ("regime_at_entry", "TEXT DEFAULT 'NORMAL'"),
             ("predicted_win_prob", "REAL DEFAULT 0.50"),
             ("source", "TEXT DEFAULT 'AUTO_TRADER'"),
+            ("pillar_scores_json", "TEXT DEFAULT '{}'"),
         ]:
             try:
                 cursor.execute(f"ALTER TABLE paper_trades ADD COLUMN {col} {col_def}")
             except Exception:
                 pass
+
+        # 3B. Fitted Regime Adaptive Weights Ledger (Finding A1)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS fitted_regime_weights (
+                regime_code TEXT PRIMARY KEY,
+                weights_json TEXT NOT NULL,
+                sample_count INTEGER NOT NULL,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # 3C. Statistically-Learned News Catalyst Store (Finding A2)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS learned_catalysts (
+                catalyst TEXT PRIMARY KEY,
+                payload_json TEXT NOT NULL,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
 
         # 4. Statistical Causal Rules Cache
         cursor.execute("""
@@ -404,20 +425,22 @@ def log_paper_trade(
     regime_at_entry: str = "NORMAL",
     predicted_win_prob: float = 0.50,
     source: str = "AUTO_TRADER",
+    pillar_scores: Optional[dict[str, float]] = None,
 ) -> int:
     """Log a new simulated or broker-dispatched trade strictly isolated to the specified user."""
     from utils.user_prefs import get_current_user_id
     effective_user = (user_id or get_current_user_id()).strip().lower()
     ts_now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     pos_val = round(entry_price * shares, 2)
+    p_scores_json = json.dumps(pillar_scores or {})
 
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("""
             INSERT INTO paper_trades
-            (timestamp, ticker, trade_type, entry_price, target_price, stop_loss_price, shares, position_value, notes, is_auto_trade, execution_mode, horizon, user_id, regime_at_entry, predicted_win_prob, source)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (ts_now, ticker.upper(), trade_type, entry_price, target_price, stop_loss_price, shares, pos_val, notes, is_auto_trade, execution_mode, horizon, effective_user, regime_at_entry, predicted_win_prob, source))
+            (timestamp, ticker, trade_type, entry_price, target_price, stop_loss_price, shares, position_value, notes, is_auto_trade, execution_mode, horizon, user_id, regime_at_entry, predicted_win_prob, source, pillar_scores_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (ts_now, ticker.upper(), trade_type, entry_price, target_price, stop_loss_price, shares, pos_val, notes, is_auto_trade, execution_mode, horizon, effective_user, regime_at_entry, predicted_win_prob, source, p_scores_json))
         conn.commit()
         return cursor.lastrowid or 0
 
@@ -1161,6 +1184,119 @@ def get_persona_aggregate_metrics() -> dict[str, dict[str, Any]]:
                 default_metrics[pid]["win_rate"] = round(wr, 1)
                 default_metrics[pid]["total_pnl"] = round(net, 2)
     return default_metrics
+
+
+# ── 8. REGIME WEIGHTS, CATALYST MODEL & CALIBRATION PERSISTENCE (FINDINGS A1, A2, A4) ──
+
+def save_fitted_regime_weights(regime_code: str, weights: dict[str, float], sample_count: int) -> None:
+    """Persists empirically fitted regime indicator weights to SQLite (Finding A1)."""
+    with get_connection() as conn:
+        conn.execute("""
+            INSERT INTO fitted_regime_weights (regime_code, weights_json, sample_count, updated_at)
+            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(regime_code) DO UPDATE SET
+                weights_json = excluded.weights_json,
+                sample_count = excluded.sample_count,
+                updated_at = CURRENT_TIMESTAMP
+        """, (regime_code, json.dumps(weights), sample_count))
+        conn.commit()
+
+
+def get_fitted_regime_weights(regime_code: str) -> dict[str, float] | None:
+    """Retrieves empirically fitted weights if at least 100 closed trade samples exist (Finding A1)."""
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT weights_json, sample_count FROM fitted_regime_weights WHERE regime_code = ?",
+            (regime_code,)
+        ).fetchone()
+    if row and row[1] >= 100:
+        try:
+            return json.loads(row[0])
+        except Exception:
+            return None
+    return None
+
+
+def get_pillar_score_history_by_regime(regime_code: str) -> tuple[list[dict[str, float]], list[float]]:
+    """
+    Extracts recorded candidate pillar scores and realized forward returns
+    for closed trades executed under the specified market regime (Finding A1).
+    """
+    with get_connection() as conn:
+        rows = conn.execute("""
+            SELECT pillar_scores_json, pnl_pct
+            FROM paper_trades
+            WHERE status != 'OPEN' AND regime_at_entry = ? AND pillar_scores_json IS NOT NULL AND pillar_scores_json != '{}'
+            ORDER BY id ASC
+        """, (regime_code,)).fetchall()
+
+    pillar_list: list[dict[str, float]] = []
+    fwd_returns: list[float] = []
+    for r in rows:
+        try:
+            p_scores = json.loads(r[0])
+            if p_scores and isinstance(p_scores, dict):
+                pillar_list.append(p_scores)
+                fwd_returns.append(float(r[1] or 0.0))
+        except Exception:
+            continue
+    return pillar_list, fwd_returns
+
+
+def save_catalyst_model(df: pd.DataFrame) -> None:
+    """Persists statistically significant learned keyword catalysts to SQLite (Finding A2)."""
+    if df is None or df.empty:
+        return
+    with get_connection() as conn:
+        conn.execute("DELETE FROM learned_catalysts")
+        for _, r in df.iterrows():
+            cat = str(r.get("catalyst", ""))
+            if cat:
+                conn.execute(
+                    "INSERT INTO learned_catalysts (catalyst, payload_json, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP) "
+                    "ON CONFLICT(catalyst) DO UPDATE SET payload_json=excluded.payload_json, updated_at=CURRENT_TIMESTAMP",
+                    (cat, json.dumps(r.to_dict()))
+                )
+        conn.commit()
+
+
+def load_catalyst_model() -> pd.DataFrame:
+    """Loads persisted learned catalyst causal rules into a pandas DataFrame (Finding A2)."""
+    with get_connection() as conn:
+        rows = conn.execute("SELECT payload_json FROM learned_catalysts").fetchall()
+    if not rows:
+        return pd.DataFrame()
+    return pd.DataFrame([json.loads(r[0]) for r in rows])
+
+
+def compute_heuristic_calibration_curve(min_per_bucket: int = 10) -> list[dict[str, Any]]:
+    """
+    Computes a true empirical calibration/reliability curve (predicted decile vs realized win rate)
+    for closed trades, eliminating fake precision claims (Finding A4).
+    """
+    with get_connection() as conn:
+        rows = conn.execute("""
+            SELECT predicted_win_prob, pnl_amount FROM paper_trades
+            WHERE status != 'OPEN' AND predicted_win_prob IS NOT NULL AND predicted_win_prob > 0
+        """).fetchall()
+    buckets: dict[int, list[int]] = {}
+    for prob, pnl in rows:
+        norm_prob = float(prob) if float(prob) <= 100.0 else float(prob) / 100.0
+        if norm_prob <= 1.0:
+            norm_prob *= 100.0
+        b = int(norm_prob // 10) * 10
+        buckets.setdefault(b, []).append(1 if (pnl or 0.0) > 0 else 0)
+
+    out = []
+    for b, outcomes in sorted(buckets.items()):
+        if len(outcomes) >= min_per_bucket:
+            out.append({
+                "predicted_bucket": f"{b}-{min(100, b+9)}%",
+                "n": len(outcomes),
+                "actual_win_rate_pct": round(100.0 * sum(outcomes) / len(outcomes), 1),
+            })
+    return out
+
 
 
 
