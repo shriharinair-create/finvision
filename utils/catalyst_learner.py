@@ -127,6 +127,14 @@ class KeywordCatalystLearner:
             d_str = str(dt_idx)[:10]
             date_return_map[d_str] = float(row.get("pct_change", 0.0))
 
+        # Finding 8 Fix: Shift date mapping forward by 1 trading session.
+        # News on day t predicts next-session forward move (t+1), eliminating reverse-causality.
+        trading_days = sorted(date_return_map.keys())
+        forward_return_map = {
+            trading_days[i]: date_return_map[trading_days[i + 1]]
+            for i in range(len(trading_days) - 1)
+        }
+
         # Sort news chronologically for strict Out-of-Sample temporal validation
         sorted_news = sorted(news_history, key=lambda x: str(x.get("date", x.get("timestamp", ""))))
         split_idx = int(len(sorted_news) * (1.0 - holdout_ratio))
@@ -139,8 +147,8 @@ class KeywordCatalystLearner:
         for item in train_news:
             d_str = str(item.get("date", item.get("timestamp", "")))[:10]
             text = str(item.get("text", item.get("title", "")))
-            if d_str in date_return_map:
-                move = date_return_map[d_str]
+            if d_str in forward_return_map:
+                move = forward_return_map[d_str]
                 ngrams = _extract_ngrams(text, n_range=(1, 3))
                 for ng in set(ngrams):
                     if len(ng) < 4 or any(junk in ng for junk in HTML_AND_WEB_JUNK):
@@ -180,8 +188,8 @@ class KeywordCatalystLearner:
         for item in oos_news:
             d_str = str(item.get("date", item.get("timestamp", "")))[:10]
             text = str(item.get("text", item.get("title", "")))
-            if d_str in date_return_map:
-                move = date_return_map[d_str]
+            if d_str in forward_return_map:
+                move = forward_return_map[d_str]
                 ngrams = _extract_ngrams(text, n_range=(1, 3))
                 for ng in set(ngrams):
                     if ng in keyword_moves_train:

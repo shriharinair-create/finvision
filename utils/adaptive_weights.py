@@ -17,8 +17,8 @@ from __future__ import annotations
 from typing import Any
 
 
-# ── Canonical Regime-Dependent Dynamic Weighting Profiles (Sum = 1.0) ─────────
-REGIME_WEIGHT_PROFILES: dict[str, dict[str, float]] = {
+# Canonical Baseline Regime Weighting Priors (Heuristic starting points before empirical fitting)
+STATIC_REGIME_WEIGHT_PROFILES: dict[str, dict[str, float]] = {
     # 🟢 BULL_MARKUP: Trends persist; buy breakouts and ride EMA hierarchies
     "BULL_MARKUP": {
         "trend": 0.35,              # EMA 8/21, SMA 50/200 alignment
@@ -56,6 +56,8 @@ REGIME_WEIGHT_PROFILES: dict[str, dict[str, float]] = {
         "news_sentiment": 0.05,
     },
 }
+
+REGIME_WEIGHT_PROFILES = STATIC_REGIME_WEIGHT_PROFILES
 
 # Baseline neutral fallback
 DEFAULT_WEIGHTS: dict[str, float] = {
@@ -219,3 +221,36 @@ def calculate_adaptive_confluence_score(
         "dominant_factor": dominant_factor,
         "is_adaptive": True,
     }
+
+
+def fit_regime_weights_from_history(
+    pillar_scores: list[dict[str, float]],
+    forward_returns: list[float],
+    min_samples: int = 100,
+) -> dict[str, float] | None:
+    """
+    Fits empirical pillar weights from historical realized returns via regularized non-negative Ridge regression.
+    Requires at least 100 observations; falls back to static prior profiles if sample size is insufficient (Finding 10).
+    """
+    if len(pillar_scores) < min_samples or len(pillar_scores) != len(forward_returns):
+        return None
+
+    try:
+        import numpy as np
+        import pandas as pd
+        from sklearn.linear_model import Ridge
+
+        df_pillars = pd.DataFrame(pillar_scores)
+        y = np.array(forward_returns)
+        
+        # Ridge with positive coefficients constraint
+        model = Ridge(alpha=1.0, positive=True).fit(df_pillars, y)
+        raw_weights = np.clip(model.coef_, 0.0, None)
+        
+        if raw_weights.sum() <= 0:
+            return None
+            
+        normalized_weights = raw_weights / raw_weights.sum()
+        return dict(zip(df_pillars.columns, [round(float(w), 3) for w in normalized_weights]))
+    except Exception:
+        return None

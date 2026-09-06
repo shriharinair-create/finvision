@@ -14,20 +14,27 @@ and strategy playbook gating (Breakout vs Mean-Reversion vs Defense).
 
 from __future__ import annotations
 
+import time
 from typing import Any, Dict, Optional
 import numpy as np
 import pandas as pd
 import yfinance as yf
+
+# In-memory TTL cache for background daemons and non-Streamlit contexts
+_REGIME_CACHE: dict[str, Any] = {"timestamp": 0.0, "data": None}
+_REGIME_TTL_SECONDS = 300.0
 
 
 def detect_indian_market_regime(
     nse_df: Optional[pd.DataFrame] = None,
     vix_df: Optional[pd.DataFrame] = None,
     bse_df: Optional[pd.DataFrame] = None,
+    force_refresh: bool = False,
 ) -> dict[str, Any]:
     """
     Detects the current Indian Market Regime across NSE and BSE.
     Fetches real-time Nifty 50 (^NSEI), BSE Sensex (^BSESN), and India VIX (^INDIAVIX).
+    Cached with 300s TTL to prevent Yahoo Finance IP throttling.
     
     Regimes:
       - BULL_MARKUP: Strong upward trend, low-to-moderate volatility. Breakouts favored.
@@ -35,7 +42,14 @@ def detect_indian_market_regime(
                               Breakouts fail frequently; switch to mean-reversion dip buying.
       - BEAR_MARKDOWN: Structural downtrend below major EMAs. Defensive mode, strict risk.
       - QUIET_ACCUMULATION: Low volatility (<13), tight consolidation. Float absorption.
+      - DATA_UNAVAILABLE: Fail-closed fallback when market feeds are offline.
     """
+    global _REGIME_CACHE
+    now = time.time()
+    if not force_refresh and nse_df is None and vix_df is None and bse_df is None:
+        if _REGIME_CACHE["data"] is not None and (now - _REGIME_CACHE["timestamp"]) < _REGIME_TTL_SECONDS:
+            return dict(_REGIME_CACHE["data"])
+
     # 1. Fetch Nifty 50 if missing
     if nse_df is None or nse_df.empty:
         try:
@@ -85,27 +99,30 @@ def detect_indian_market_regime(
         if "Close" in vix_df:
             vix_val = float(vix_df["Close"].dropna().iloc[-1])
 
-    # Fallback if Nifty data unavailable
+    # Defensive fail-closed fallback if Nifty data unavailable
     if nse_df.empty or len(nse_df) < 20 or "Close" not in nse_df:
-        return {
-            "regime_code": "NORMAL_BALANCED",
-            "regime_name": "Balanced Market Regime",
-            "badge_color": "#58A6FF",
-            "nifty_price": 24000.0,
+        res = {
+            "regime_code": "DATA_UNAVAILABLE",
+            "regime_name": "Data Unavailable — Defensive Fallback",
+            "badge_color": "#8B949E",
+            "nifty_price": 0.0,
             "nifty_pct_ema20": 0.0,
             "sensex_price": round(sensex_val, 2),
             "sensex_change_pct": round(sensex_pct_chg, 2),
             "sensex_trend": sensex_trend,
-            "cross_exchange_verdict": "CONFIRMED_NSE_BSE_ALIGNMENT",
+            "cross_exchange_verdict": "EXCHANGE_DATA_OFFLINE",
             "vix_value": round(vix_val, 2),
             "vix_regime": "NORMAL",
-            "strategy_playbook": "BALANCED_SWING",
-            "breakouts_enabled": True,
-            "target_multiplier": 1.0,
-            "stop_multiplier": 1.0,
-            "max_risk_multiplier": 1.0,
-            "playbook_guidance": "Standard balanced trend and swing setups active."
+            "strategy_playbook": "DEFENSIVE_HOLD",
+            "breakouts_enabled": False,
+            "target_multiplier": 0.75,
+            "stop_multiplier": 0.90,
+            "max_risk_multiplier": 0.0,  # Refuse new entries when blind
+            "playbook_guidance": "Broad market index data is unavailable; new entries suspended until regime can be confirmed."
         }
+        _REGIME_CACHE["timestamp"] = now
+        _REGIME_CACHE["data"] = res
+        return res
 
     close = nse_df["Close"].astype(float).dropna()
     last_nifty = float(close.iloc[-1])
@@ -216,7 +233,7 @@ def detect_indian_market_regime(
             f"Standard balanced trend and swing setups active."
         )
 
-    return {
+    result = {
         "regime_code": regime_code,
         "regime_name": regime_name,
         "badge_color": badge_color,
@@ -236,3 +253,6 @@ def detect_indian_market_regime(
         "max_risk_multiplier": risk_mult,
         "playbook_guidance": guidance
     }
+    _REGIME_CACHE["timestamp"] = now
+    _REGIME_CACHE["data"] = result
+    return result

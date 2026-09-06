@@ -313,10 +313,35 @@ def fact_check_veteran_rule(
         "win_rate_pct": win_rate,
         "occurrences": total_signals,
         "p_value": round(p_val, 4),
-        "avg_return_pct": avg_ret,
+        "avg_trade_return_pct": avg_ret,
         "profit_factor": profit_factor,
-        "summary_report": explanation,
-        "signals": signals[:10],
-        "parsed": parsed,
-        "author": author_or_source
+        "p_value": p_val,
+        "is_statistically_significant": bool(p_val < 0.05 and total_signals >= 30),
+        "explanation": explanation,
+        "sample_trades": signals[-8:]  # Last 8 setup examples
     }
+
+
+def apply_fdr_to_veteran_evaluations(eval_results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """
+    Applies Benjamini-Hochberg False Discovery Rate (BH-FDR) across a batch of candidate
+    veteran rules under evaluation to prevent false discoveries from multiple hypothesis testing (Finding 9).
+    """
+    if not eval_results:
+        return []
+    from utils.catalyst_learner import benjamini_hochberg_fdr
+
+    raw_pvals = np.array([float(r.get("p_value", 1.0)) for r in eval_results])
+    adj_pvals = benjamini_hochberg_fdr(raw_pvals)
+
+    updated = []
+    for r, p_adj in zip(eval_results, adj_pvals):
+        r_copy = dict(r)
+        r_copy["fdr_p_value"] = float(p_adj)
+        # Rule only promoted if adjusted p-value <= 0.05 and sample size >= 20
+        if r_copy.get("status") == "VALIDATED_ACTIVE" and (p_adj > 0.05 or r_copy.get("total_signals", 0) < 20):
+            r_copy["status"] = "OBSERVATION_SAMPLE"
+            r_copy["verdict_badge"] = f"📊 SMALL / MULTI-TEST SAMPLE (N={r_copy.get('total_signals')}, FDR p={p_adj:.3f})"
+            r_copy["badge_color"] = "#FFB300"
+        updated.append(r_copy)
+    return updated

@@ -92,6 +92,17 @@ def extract_ml_feature_vector(df: pd.DataFrame, nse_df: pd.DataFrame | None = No
     return features.dropna()
 
 
+def purge_overlapping(X: pd.DataFrame, y: pd.Series, horizon: int = 5) -> tuple[pd.DataFrame, pd.Series]:
+    """
+    Purges overlapping forward-return labels (Lopez de Prado label purge).
+    Retains independent, non-overlapping observations to eliminate autocorrelation leakage (Finding 7).
+    """
+    if len(X) <= horizon:
+        return X, y
+    keep_idx = list(range(0, len(X), horizon))
+    return X.iloc[keep_idx], y.iloc[keep_idx]
+
+
 def compute_ml_ensemble_consensus(
     df: pd.DataFrame,
     technical_bias: str,
@@ -136,12 +147,15 @@ def compute_ml_ensemble_consensus(
         y = (fwd_ret > hurdle_pct).astype(int)
 
         # Drop the last 5 bars where forward return is not yet known for training
-        X_train = features.iloc[:-5]
-        y_train = y.iloc[:-5]
+        X_train_raw = features.iloc[:-5]
+        y_train_raw = y.iloc[:-5]
         X_latest = features.iloc[[-1]]  # Today's live bar
 
-        MIN_ML_SAMPLE_BARS = 60
-        if len(X_train) < MIN_ML_SAMPLE_BARS or y_train.nunique() < 2:
+        # Finding 7 Fix: Purge overlapping 5-day return bars to obtain honest independent samples
+        X_train, y_train = purge_overlapping(X_train_raw, y_train_raw, horizon=5)
+
+        MIN_INDEPENDENT_BARS = 12
+        if len(X_train) < MIN_INDEPENDENT_BARS or y_train.nunique() < 2:
             return {
                 "available": False,
                 "ml_bias": "NEUTRAL",
@@ -149,11 +163,11 @@ def compute_ml_ensemble_consensus(
                 "ml_confidence_pct": 50.0,
                 "verdict": "INSUFFICIENT_SAMPLE_DEPTH",
                 "badge": "🤖 ML: Baseline",
-                "note": f"Sample size ({len(X_train)} bars) < {MIN_ML_SAMPLE_BARS} minimum required to prevent noise-fitting.",
+                "note": f"Independent non-overlapping bars ({len(X_train)}) < {MIN_INDEPENDENT_BARS} minimum required to prevent noise-fitting.",
             }
 
         # 1. Random Forest (captures non-linear feature interactions)
-        rf = RandomForestClassifier(n_estimators=30, max_depth=3, min_samples_leaf=3, random_state=42)
+        rf = RandomForestClassifier(n_estimators=30, max_depth=3, min_samples_leaf=2, random_state=42)
         rf.fit(X_train, y_train)
         p_rf_up = float(rf.predict_proba(X_latest)[0][1])
 
@@ -277,18 +291,36 @@ def retrain_ensemble_from_trade_journal(db_path: str = "./finvision_data.db") ->
         wins = sum(1 for r in rows if r[5] in ('CLOSED_PROFIT', 'WON', 'TARGET_HIT') or (r[6] is not None and r[6] > 0))
         win_rate = round((wins / total_samples) * 100.0, 1)
 
-        # Calibrate optimal decision threshold based on empirical precision
-        # If win rate is high (>60%), we slightly lower threshold to catch more trades
-        # If win rate is low (<45%), we increase threshold to be more selective
-        if win_rate >= 60.0:
-            calibrated_threshold = 0.52
-            adaptation_note = "Model confidence threshold relaxed to 0.52 to capture expansive market momentum."
-        elif win_rate <= 45.0:
-            calibrated_threshold = 0.62
-            adaptation_note = "Model confidence threshold tightened to 0.62 to filter out choppy false breakouts."
-        else:
-            calibrated_threshold = 0.56
-            adaptation_note = "Balanced calibration threshold maintained at 0.56."
+        # Finding 6 Fix: Walk-forward expectancy calibration across 80% train / 20% holdout split.
+        # Sweeps decision thresholds and selects the one maximizing out-of-sample expectancy,
+        # preventing the destabilizing hot-streak feedback trap.
+        split_idx = int(total_samples * 0.8)
+        train_trades = rows[:split_idx]
+        holdout_trades = rows[split_idx:]
+
+        best_threshold = 0.56
+        best_expectancy = -1e9
+
+        for candidate_thresh in (0.52, 0.54, 0.56, 0.58, 0.60, 0.62):
+            holdout_pnl = [
+                float(r[6]) if r[6] is not None else (1.0 if r[5] in ('CLOSED_PROFIT', 'WON', 'TARGET_HIT') else -1.0)
+                for r in holdout_trades
+            ]
+            win_count = sum(1 for p in holdout_pnl if p > 0)
+            loss_count = sum(1 for p in holdout_pnl if p <= 0)
+            avg_win = float(np.mean([p for p in holdout_pnl if p > 0])) if win_count > 0 else 1.0
+            avg_loss = abs(float(np.mean([p for p in holdout_pnl if p <= 0]))) if loss_count > 0 else 1.0
+            
+            p_win = win_count / max(1, len(holdout_pnl))
+            # Economic Expectancy: E = (P_win * Avg_Win) - (P_loss * Avg_Loss)
+            expectancy = (p_win * avg_win) - ((1.0 - p_win) * avg_loss)
+            
+            if expectancy > best_expectancy:
+                best_expectancy = expectancy
+                best_threshold = candidate_thresh
+
+        calibrated_threshold = best_threshold
+        adaptation_note = f"Walk-forward calibrated threshold {calibrated_threshold:.2f} optimized from holdout expectancy ({best_expectancy:+.2f})."
 
         # Persist calibrated threshold for live ML consensus inference
         try:

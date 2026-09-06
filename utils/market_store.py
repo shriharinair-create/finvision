@@ -160,9 +160,14 @@ def init_db() -> None:
                 target_multiplier REAL DEFAULT 1.0,
                 liquidity_hunts_count INTEGER DEFAULT 0,
                 clean_wins_count INTEGER DEFAULT 0,
+                total_trades INTEGER DEFAULT 0,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        try:
+            cursor.execute("ALTER TABLE adaptive_stock_buffers ADD COLUMN total_trades INTEGER DEFAULT 0")
+        except Exception:
+            pass
 
         # 8. Indian Market Regime History
         cursor.execute("""
@@ -670,19 +675,21 @@ def log_trade_postmortem(postmortem: dict[str, Any]) -> int:
         ))
         row_id = cursor.lastrowid
 
-        # Update or create adaptive stock buffer entry
+        # Update or create adaptive stock buffer entry with EWMA update (Finding 5)
         ticker = postmortem.get("ticker", "").upper()
         buf_mult = float(postmortem.get("stock_buffer_multiplier", 1.0))
         is_hunt = 1 if postmortem.get("diagnosis_code") == "LIQUIDITY_SWEEP_HUNT" else 0
         is_win = 1 if "WIN" in postmortem.get("diagnosis_code", "") or "BLOWOFF" in postmortem.get("diagnosis_code", "") else 0
 
         cursor.execute("""
-            INSERT INTO adaptive_stock_buffers (ticker, current_stop_multiplier, liquidity_hunts_count, clean_wins_count)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO adaptive_stock_buffers (ticker, current_stop_multiplier, liquidity_hunts_count, clean_wins_count, total_trades)
+            VALUES (?, ?, ?, ?, 1)
             ON CONFLICT(ticker) DO UPDATE SET
-                current_stop_multiplier = MAX(adaptive_stock_buffers.current_stop_multiplier, excluded.current_stop_multiplier),
+                -- EWMA toward new observation (85% previous, 15% new) rather than permanent ratchet MAX
+                current_stop_multiplier = 0.85 * adaptive_stock_buffers.current_stop_multiplier + 0.15 * excluded.current_stop_multiplier,
                 liquidity_hunts_count = adaptive_stock_buffers.liquidity_hunts_count + excluded.liquidity_hunts_count,
                 clean_wins_count = adaptive_stock_buffers.clean_wins_count + excluded.clean_wins_count,
+                total_trades = adaptive_stock_buffers.total_trades + 1,
                 updated_at = CURRENT_TIMESTAMP
         """, (ticker, buf_mult, is_hunt, is_win))
 
@@ -702,7 +709,10 @@ def get_postmortem_history(limit: int = 50) -> list[dict[str, Any]]:
 
 
 def get_stock_adaptive_buffer(ticker: str) -> dict[str, Any]:
-    """Gets stock-specific adaptive stop multiplier learned from past post-mortems."""
+    """
+    Gets stock-specific adaptive stop multiplier learned from past post-mortems.
+    Gated on sample size: requires at least 8 completed trades before widening stops (Finding 5).
+    """
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("""
@@ -710,14 +720,38 @@ def get_stock_adaptive_buffer(ticker: str) -> dict[str, Any]:
         """, (ticker.upper(),))
         row = cursor.fetchone()
         if row:
-            return dict(row)
+            r_dict = dict(row)
+            # Require minimum empirical evidence (n >= 8 trades) before applying non-standard stops
+            if r_dict.get("total_trades", 0) < 8:
+                return {
+                    "ticker": ticker.upper(),
+                    "current_stop_multiplier": 1.0,
+                    "target_multiplier": 1.0,
+                    "liquidity_hunts_count": r_dict.get("liquidity_hunts_count", 0),
+                    "clean_wins_count": r_dict.get("clean_wins_count", 0),
+                    "total_trades": r_dict.get("total_trades", 0),
+                }
+            return r_dict
         return {
             "ticker": ticker.upper(),
             "current_stop_multiplier": 1.0,
             "target_multiplier": 1.0,
             "liquidity_hunts_count": 0,
-            "clean_wins_count": 0
+            "clean_wins_count": 0,
+            "total_trades": 0,
         }
+
+
+def decay_stock_adaptive_buffers(decay_factor: float = 0.95) -> None:
+    """Decays stop multipliers toward 1.0 over time to prevent permanent widening (Finding 5)."""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE adaptive_stock_buffers
+            SET current_stop_multiplier = MAX(1.0, current_stop_multiplier * ?)
+            WHERE current_stop_multiplier > 1.0
+        """, (decay_factor,))
+        conn.commit()
 
 
 def log_regime_snapshot(regime_data: dict[str, Any]) -> None:

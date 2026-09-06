@@ -27,6 +27,7 @@ Features:
 from __future__ import annotations
 import datetime
 import logging
+import os
 import threading
 import time
 from typing import Any, Dict, List, Optional
@@ -47,8 +48,9 @@ from utils.market_store import (
     trip_circuit_breaker,
     reset_circuit_breaker,
     get_connection,
+    log_persona_simulation,
 )
-from utils.risk import compute_position_size
+from utils.risk import compute_position_size, check_broad_market_health
 from utils.regime import detect_indian_market_regime
 from utils.meta_labeling import evaluate_meta_labeling_filter
 from utils.bse_corporate import check_corporate_event_risk
@@ -56,8 +58,23 @@ from utils.trade_postmortem import diagnose_trade_postmortem
 from utils.ml_ensemble import retrain_ensemble_from_trade_journal, compute_ml_ensemble_consensus
 from utils.broker_gateway import build_broker_order_payload, dispatch_broker_order, SUPPORTED_BROKERS
 from utils.fundamental_wealth import BLUE_CHIP_COMPOUNDERS, analyze_stock_fundamentals, DEFAULT_FUNDAMENTALS
+from utils.macro import get_live_cross_asset_macro
+from utils.persona_engine import evaluate_stock_for_personas, resolve_open_persona_simulations
+from utils.synthetic_cohorts import run_cohort_simulation_cycle
+from utils.user_prefs import get_user_preferences
+from utils.cross_device_sync import (
+    get_current_device_type,
+    check_pc_heartbeat_health,
+    acquire_execution_lease,
+    release_execution_lease,
+    push_sync_to_cloud_async,
+    pull_and_apply_cloud_sync,
+)
 
 logger = logging.getLogger(__name__)
+
+# Enforced Institutional Conviction Threshold (Lopez de Prado Meta-Labeling Bar)
+CONVICTION_MIN_WIN_PROB = 60.0
 
 DAY_UNIVERSE = [
     "RELIANCE.NS", "TCS.NS", "INFY.NS", "HDFCBANK.NS", "ICICIBANK.NS",
@@ -229,13 +246,12 @@ def evaluate_circuit_breakers(
     vix_panic = False
     vix_val = 14.5
     try:
-        from utils.macro import get_live_cross_asset_macro
         macro_d = get_live_cross_asset_macro()
         vix_val = float(macro_d.get("india_vix", 14.5))
         if vix_val >= 22.0:
             vix_panic = True
-    except Exception:
-        pass
+    except Exception as e_vix:
+        logger.debug(f"Live India VIX macro check note: {e_vix}")
 
     if vix_panic:
         return {
@@ -383,8 +399,12 @@ def scan_multi_horizon_candidates(
 
                         # Check ML ensemble consensus
                         ml_res = compute_ml_ensemble_consensus(df_t, "BULLISH")
-                        win_prob = float(meta_eval.get("meta_win_probability_pct", 60.0))
-                        is_conviction = meta_eval.get("is_approved", True) and win_prob >= 50.0 and ml_res.get("ml_bias") != "BEARISH"
+                        win_prob = float(meta_eval.get("meta_win_probability_pct", meta_eval.get("heuristic_score_pct", 50.0)))
+                        is_conviction = (
+                            meta_eval.get("is_approved") is True
+                            and win_prob >= CONVICTION_MIN_WIN_PROB
+                            and ml_res.get("ml_bias") != "BEARISH"
+                        )
 
                         if is_conviction:
                             sizing = compute_position_size(
@@ -394,19 +414,16 @@ def scan_multi_horizon_candidates(
                                 stop_price=stop_loss,
                             )
                             shares_count = int(sizing.get("shares", 0))
-                            if shares_count == 0 and budget >= entry:
-                                shares_count = 1
-                                sizing["shares"] = 1
-                                sizing["position_value"] = round(entry, 2)
-                                sizing["cash_at_risk"] = round(entry - stop_loss, 2)
+                            if shares_count <= 0:
+                                logger.debug(f"{tick}: sized to 0 shares at risk_pct={risk_pct}; risk exceeds tolerance, skipping candidate.")
+                                continue
 
-                            if shares_count > 0:
-                                candidates.append({
-                                    "ticker": tick,
-                                    "horizon": "DAY_TRADE",
-                                    "trade_type": "BUY_INTRADAY",
-                                    "entry_price": entry,
-                                    "target_price": target1,
+                            candidates.append({
+                                "ticker": tick,
+                                "horizon": "DAY_TRADE",
+                                "trade_type": "BUY_INTRADAY",
+                                "entry_price": entry,
+                                "target_price": target1,
                                     "stop_loss_price": stop_loss,
                                     "shares": shares_count,
                                     "position_value": sizing["position_value"],
@@ -575,7 +592,6 @@ def monitor_and_resolve_open_trades(dry_run: bool = True) -> list[dict[str, Any]
 
     # Resolve open persona simulations simultaneously
     try:
-        from utils.persona_engine import resolve_open_persona_simulations
         if quotes:
             resolve_open_persona_simulations(quotes)
     except Exception as e_p:
@@ -746,6 +762,20 @@ def run_auto_trade_cycle(
     cb_status = evaluate_circuit_breakers(capital=user_budget, budget=user_budget)
     allow_entries = cb_status.get("allow_new_entries", True)
 
+    # Finding 1: Enforce Friday Weekend Risk Blackout on multi-day swing holds (>14:30 IST)
+    if cb_status.get("friday_blackout") and "SWING_TRADE" in enabled_horizons:
+        enabled_horizons = [h for h in enabled_horizons if h != "SWING_TRADE"]
+        logger.info("Friday weekend risk blackout (>14:30 IST): SWING_TRADE disabled for this cycle.")
+
+    # Finding 1: Enforce broad market health gate on trade entries
+    mkt = check_broad_market_health()
+    if mkt.get("available") and mkt.get("healthy") is False:
+        if "SWING_TRADE" in enabled_horizons:
+            enabled_horizons = [h for h in enabled_horizons if h != "SWING_TRADE"]
+            logger.info("Broad market unhealthy: SWING_TRADE disabled for this cycle.")
+        risk_pct = risk_pct * 0.5
+        logger.info(f"Broad market unhealthy: risk scaled down to {risk_pct:.3f}%.")
+
     active_now = get_active_auto_trades()
     new_entries = []
 
@@ -771,8 +801,6 @@ def run_auto_trade_cycle(
 
             # ── 🎭 Autonomous 4-Persona Quant Sandbox Evaluation ─────────────
             try:
-                from utils.persona_engine import evaluate_stock_for_personas
-                from utils.market_store import log_persona_simulation
                 for cand in candidates:
                     cand_t = cand["ticker"]
                     cand_e = cand["entry_price"]
@@ -800,7 +828,6 @@ def run_auto_trade_cycle(
 
             # ── 🧪 Synthetic Sector Pods Multi-Cohort Forward Cycle ──────────
             try:
-                from utils.synthetic_cohorts import run_cohort_simulation_cycle
                 run_cohort_simulation_cycle(live_quotes=quotes)
             except Exception as e_cohort:
                 logger.debug(f"Synthetic cohort simulation notice: {e_cohort}")
@@ -900,13 +927,6 @@ def auto_trader_background_loop(poll_interval: int = 180):
             cfg = get_auto_trader_config()
             is_enabled = cfg.get("is_enabled", False)
 
-            from utils.user_prefs import get_user_preferences
-            from utils.cross_device_sync import (
-                get_current_device_type,
-                check_pc_heartbeat_health,
-                acquire_execution_lease,
-                release_execution_lease,
-            )
             exec_leader = get_user_preferences().get("execution_leader", "AUTO_FAILOVER")
             dev_type = get_current_device_type()
 
@@ -943,10 +963,9 @@ def auto_trader_background_loop(poll_interval: int = 180):
                             cycle_res = run_auto_trade_cycle(user_budget=budget, risk_pct=risk)
                             # Broadcast latest state to cloud relay for mobile telemetry
                             try:
-                                from utils.cross_device_sync import push_sync_to_cloud_async
                                 push_sync_to_cloud_async()
-                            except Exception:
-                                pass
+                            except Exception as e_push:
+                                logger.debug(f"Telemetry push to cloud notice: {e_push}")
                         finally:
                             release_execution_lease(node_id, lease_tok)
                     else:
@@ -955,19 +974,17 @@ def auto_trader_background_loop(poll_interval: int = 180):
                     # Companion / Observer Node (e.g. Mobile connecting to Cloud while PC is alive):
                     # Pulls live status & open positions from PC Leader without duplicate execution
                     try:
-                        from utils.cross_device_sync import pull_and_apply_cloud_sync
                         pull_and_apply_cloud_sync()
-                    except Exception:
-                        pass
+                    except Exception as e_pull:
+                        logger.debug(f"Cloud sync pull notice: {e_pull}")
             else:
                 # If locally paused, check if other device enabled it or made changes
                 try:
-                    from utils.cross_device_sync import pull_and_apply_cloud_sync
                     pull_and_apply_cloud_sync()
-                except Exception:
-                    pass
+                except Exception as e_pull2:
+                    logger.debug(f"Cloud sync pull idle notice: {e_pull2}")
         except Exception as e:
-            logger.debug(f"Auto-trader background cycle notice: {e}")
+            logger.warning(f"Auto-trader background cycle issue: {e}", exc_info=True)
 
         _auto_trader_stop_event.wait(poll_interval)
 
